@@ -1,9 +1,9 @@
 from fastapi import status
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
-from sqlalchemy.exc import SQLAlchemyError
 
 from clinicops.api.v1 import health as health_module
+from clinicops.db.exceptions import DatabaseUnavailableError
 
 
 def test_liveness_returns_ok(client: TestClient) -> None:
@@ -34,7 +34,7 @@ def test_readiness_returns_service_unavailable_when_database_check_fails(
     monkeypatch: MonkeyPatch,
 ) -> None:
     def raise_database_error() -> None:
-        raise SQLAlchemyError("database unavailable")
+        raise DatabaseUnavailableError("database unavailable")
 
     monkeypatch.setattr(
         health_module,
@@ -45,4 +45,6 @@ def test_readiness_returns_service_unavailable_when_database_check_fails(
     response = client.get("/api/v1/health/ready")
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    assert response.json() == {"detail": "database unavailable"}
+    error = response.json()["error"]
+    assert error["code"] == "database_unavailable"
+    assert error["message"] == "The database is unavailable."

@@ -63,6 +63,11 @@ class RequestContextMiddleware:
             headers.get(CORRELATION_ID_HEADER),
             request_id,
         )
+
+        state = scope.setdefault("state", {})
+        state["request_id"] = request_id
+        state["correlation_id"] = correlation_id
+
         context = RequestContext(
             request_id=request_id,
             correlation_id=correlation_id,

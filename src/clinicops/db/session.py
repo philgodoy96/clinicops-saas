@@ -2,9 +2,11 @@ from collections.abc import Iterator
 from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from clinicops.core.config import get_settings
+from clinicops.db.exceptions import DatabaseUnavailableError
 
 
 @lru_cache
@@ -47,5 +49,8 @@ def get_db_session() -> Iterator[Session]:
 def check_database_connection() -> None:
     """Execute a minimal query to confirm database availability."""
 
-    with get_engine().connect() as connection:
-        connection.execute(text("SELECT 1"))
+    try:
+        with get_engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError as exc:
+        raise DatabaseUnavailableError from exc
