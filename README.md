@@ -13,12 +13,12 @@ The initial product is API-first and implemented as a modular monolith using Fas
 Current phase:
 
 ```text
-Architecture and engineering foundation
+Implementation planning
 ```
 
-The repository currently contains the product context, system design, directory structure principles, and engineering standards.
+The product context, system design, directory structure principles, and engineering standards are documented.
 
-Application implementation will be introduced incrementally through focused, reviewable changes.
+The implementation roadmap defines the planned delivery sequence, engineering risks, test focus, and completion criteria for each major capability.
 
 ---
 
@@ -332,6 +332,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Project Context](docs/architecture/project-context.md)
 - [System Design](docs/architecture/system-design.md)
 - [Directory Structure Principles](docs/architecture/directory-structure.md)
+- [Implementation Plan](docs/implementation-plan.md)
 - [Engineering Guide](ENGINEERING_GUIDE.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
