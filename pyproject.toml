@@ -23,7 +23,7 @@ module-name = "clinicops"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28,<1.0",
+    "httpx2>=2.7,<3.0",
     "mypy>=1.14,<3.0",
     "pytest>=8.3,<10.0",
     "pytest-cov>=6.0,<8.0",
