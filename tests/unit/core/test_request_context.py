@@ -69,5 +69,6 @@ def test_request_context_is_immutable() -> None:
         correlation_id="correlation-456",
     )
 
+    field_name = "request_id"
     with pytest.raises(FrozenInstanceError):
-        context.request_id = "different-request"
+        setattr(context, field_name, "different-request")
