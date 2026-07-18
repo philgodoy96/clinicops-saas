@@ -1,0 +1,13 @@
+ClinicOps database migrations
+
+Create a new migration after changing SQLAlchemy models:
+
+    uv run alembic revision --autogenerate -m "describe schema change"
+
+Apply all migrations:
+
+    uv run alembic upgrade head
+
+Inspect the current revision:
+
+    uv run alembic current

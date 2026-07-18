@@ -2,6 +2,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import ClassVar, Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: Environment = Environment.LOCAL
     log_level: LogLevel = "INFO"
+    database_url: str = "postgresql+psycopg://clinicops:clinicops@localhost:5432/clinicops"
+    database_connect_timeout_seconds: int = Field(
+        default=3,
+        ge=1,
+        le=30,
+    )
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
