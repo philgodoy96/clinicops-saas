@@ -1,12 +1,35 @@
+from collections.abc import Callable
+
 import pytest
 from pydantic import ValidationError
 from pytest import MonkeyPatch
 
 from clinicops.core.config import Environment, Settings
 
+CLINICOPS_ENVIRONMENT_VARIABLES = (
+    "CLINICOPS_APP_NAME",
+    "CLINICOPS_APP_VERSION",
+    "CLINICOPS_ENVIRONMENT",
+    "CLINICOPS_LOG_LEVEL",
+    "CLINICOPS_DATABASE_URL",
+    "CLINICOPS_DATABASE_CONNECT_TIMEOUT_SECONDS",
+)
 
-def test_settings_use_expected_defaults_without_env_file() -> None:
-    settings = Settings(_env_file=None)
+
+def clear_clinicops_environment(monkeypatch: MonkeyPatch) -> None:
+    """Remove ClinicOps variables that could affect settings tests."""
+
+    for variable_name in CLINICOPS_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(variable_name, raising=False)
+
+
+def test_settings_use_expected_defaults_without_env_file(
+    monkeypatch: MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    clear_clinicops_environment(monkeypatch)
+
+    settings = settings_factory()
 
     assert settings.app_name == "ClinicOps SaaS"
     assert settings.app_version == "0.1.0"
@@ -20,7 +43,9 @@ def test_settings_use_expected_defaults_without_env_file() -> None:
 
 def test_settings_load_prefixed_environment_variables(
     monkeypatch: MonkeyPatch,
+    settings_factory: Callable[..., Settings],
 ) -> None:
+    clear_clinicops_environment(monkeypatch)
     monkeypatch.setenv("CLINICOPS_APP_NAME", "ClinicOps Test")
     monkeypatch.setenv("CLINICOPS_ENVIRONMENT", "test")
     monkeypatch.setenv("CLINICOPS_LOG_LEVEL", "DEBUG")
@@ -30,7 +55,7 @@ def test_settings_load_prefixed_environment_variables(
     )
     monkeypatch.setenv("CLINICOPS_DATABASE_CONNECT_TIMEOUT_SECONDS", "7")
 
-    settings = Settings(_env_file=None)
+    settings = settings_factory()
 
     assert settings.app_name == "ClinicOps Test"
     assert settings.environment is Environment.TEST
@@ -40,9 +65,9 @@ def test_settings_load_prefixed_environment_variables(
 
 
 @pytest.mark.parametrize("timeout", [0, 31])
-def test_settings_reject_invalid_database_connect_timeout(timeout: int) -> None:
+def test_settings_reject_invalid_database_connect_timeout(
+    timeout: int,
+    settings_factory: Callable[..., Settings],
+) -> None:
     with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            database_connect_timeout_seconds=timeout,
-        )
+        settings_factory(database_connect_timeout_seconds=timeout)
