@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-clinicops}
+      POSTGRES_USER: ${POSTGRES_USER:-clinicops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clinicops}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - clinicops_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-clinicops} -d ${POSTGRES_DB:-clinicops}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  clinicops_postgres_data:

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: clinicops
+          POSTGRES_USER: clinicops
+          POSTGRES_PASSWORD: clinicops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clinicops -d clinicops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 5s
+
+    env:
+      CLINICOPS_ENVIRONMENT: test
+      CLINICOPS_LOG_LEVEL: INFO
+      CLINICOPS_DATABASE_URL: postgresql+psycopg://clinicops:clinicops@localhost:5432/clinicops
+      CLINICOPS_DATABASE_CONNECT_TIMEOUT_SECONDS: "3"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: "0.11.28"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install project dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Run linting
+        run: uv run ruff check .
+
+      - name: Run type checking
+        run: uv run mypy src tests
+
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+
+      - name: Check migration consistency
+        run: uv run alembic check
+
+      - name: Run tests
+        run: uv run pytest --cov=clinicops --cov-report=term-missing
+
+      - name: Build project
+        run: uv build
+
+      - name: Minimize uv cache
+        if: always()
+        run: uv cache prune --ci

@@ -334,6 +334,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Directory Structure Principles](docs/architecture/directory-structure.md)
 - [Implementation Plan](docs/implementation-plan.md)
 - [Engineering Guide](ENGINEERING_GUIDE.md)
+- [Local Development Setup](docs/development/local-setup.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
