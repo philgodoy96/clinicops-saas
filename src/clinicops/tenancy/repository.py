@@ -24,6 +24,16 @@ class TenantRepository:
         session.add(tenant)
         session.flush()
 
+    def add_membership_and_flush(
+        self,
+        session: Session,
+        membership: Membership,
+    ) -> None:
+        """Add a membership and flush the current unit of work."""
+
+        session.add(membership)
+        session.flush()
+
     def get_by_id_for_update(
         self,
         session: Session,
