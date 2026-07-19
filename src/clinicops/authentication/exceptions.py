@@ -15,6 +15,13 @@ class AuthenticationConfigurationError(AuthenticationError):
     public_message = "Authentication token configuration is invalid."
 
 
+class InvalidCredentialsError(AuthenticationError):
+    """Raised when supplied credentials cannot authenticate a user."""
+
+    code = "invalid_credentials"
+    public_message = "The email or password is invalid."
+
+
 class AccessTokenInvalidError(AuthenticationError):
     """Raised when an access token cannot be trusted."""
 

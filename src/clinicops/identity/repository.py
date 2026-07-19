@@ -30,7 +30,12 @@ class UserRepository:
     ) -> User | None:
         """Return and lock the global user registered with an email."""
 
-        statement = select(User).where(User.email == canonical_email).with_for_update()
+        statement = (
+            select(User)
+            .where(User.email == canonical_email)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return session.scalar(statement)
 
     def get_by_id_for_update(
@@ -38,9 +43,14 @@ class UserRepository:
         session: Session,
         user_id: UUID,
     ) -> User | None:
-        """Return and lock a global user for a state-sensitive workflow."""
+        """Return, lock, and refresh a global user."""
 
-        statement = select(User).where(User.id == user_id).with_for_update()
+        statement = (
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return session.scalar(statement)
 
     def add_and_flush(

@@ -6,6 +6,7 @@ from clinicops.authentication.exceptions import (
 )
 
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
+AUTHENTICATION_SESSION_LIFETIME = timedelta(days=30)
 JWT_ALGORITHM = "HS256"
 MINIMUM_SIGNING_KEY_BYTES = 32
 
