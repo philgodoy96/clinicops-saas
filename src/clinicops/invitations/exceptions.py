@@ -8,6 +8,13 @@ class InvitationError(ApplicationError):
     public_message = "The invitation operation could not be completed."
 
 
+class InvitationNotFoundError(InvitationError):
+    """Raised when a required tenant invitation does not exist."""
+
+    code = "invitation_not_found"
+    public_message = "The invitation was not found."
+
+
 class InvitationAlreadyPendingError(InvitationError):
     """Raised when an unexpired pending invitation already exists."""
 
@@ -27,6 +34,13 @@ class InvitationIssuerNotAuthorizedError(InvitationError):
 
     code = "invitation_issuer_not_authorized"
     public_message = "The actor cannot issue invitations."
+
+
+class InvitationActorNotAuthorizedError(InvitationError):
+    """Raised when the actor cannot manage an invitation."""
+
+    code = "invitation_actor_not_authorized"
+    public_message = "The actor cannot manage the invitation."
 
 
 class InvitationMembershipAlreadyExistsError(InvitationError):

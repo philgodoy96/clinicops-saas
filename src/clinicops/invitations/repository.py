@@ -35,6 +35,24 @@ class InvitationRepository:
         statement = select(Invitation).where(Invitation.id == invitation_id).with_for_update()
         return session.scalar(statement)
 
+    def get_for_tenant_by_id_for_update(
+        self,
+        session: Session,
+        tenant_id: UUID,
+        invitation_id: UUID,
+    ) -> Invitation | None:
+        """Return and lock an invitation within an explicit tenant."""
+
+        statement = (
+            select(Invitation)
+            .where(
+                Invitation.id == invitation_id,
+                Invitation.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+        return session.scalar(statement)
+
     def get_pending_for_update(
         self,
         session: Session,
