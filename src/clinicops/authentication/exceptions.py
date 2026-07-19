@@ -22,6 +22,13 @@ class InvalidCredentialsError(AuthenticationError):
     public_message = "The email or password is invalid."
 
 
+class AuthenticationSessionNotFoundError(AuthenticationError):
+    """Raised when a user-owned authentication session is unavailable."""
+
+    code = "authentication_session_not_found"
+    public_message = "The authentication session was not found."
+
+
 class AuthenticationSessionInactiveError(AuthenticationError):
     """Raised when an authentication session cannot be used."""
 

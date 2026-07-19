@@ -67,6 +67,25 @@ class AuthenticationRepository:
         )
         return session.scalar(statement)
 
+    def get_user_session_by_id_for_update(
+        self,
+        session: Session,
+        user_id: UUID,
+        session_id: UUID,
+    ) -> AuthSession | None:
+        """Return and lock a session owned by one global user."""
+
+        statement = (
+            select(AuthSession)
+            .where(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return session.scalar(statement)
+
     def get_refresh_token_by_id_for_update(
         self,
         session: Session,
