@@ -339,6 +339,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Global Identity Model](docs/architecture/global-identity.md)
 - [Tenant and Membership Model](docs/architecture/tenant-membership.md)
 - [Invitation Lifecycle](docs/architecture/invitation-lifecycle.md)
+- [Authentication Sessions](docs/architecture/authentication-sessions.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
