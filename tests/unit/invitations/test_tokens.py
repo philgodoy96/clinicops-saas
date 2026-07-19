@@ -36,3 +36,11 @@ def test_invitation_token_digest_uses_sha256() -> None:
     assert digest_invitation_token("abc") == (
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     )
+
+
+def test_invitation_token_repr_hides_plaintext_and_digest() -> None:
+    token = generate_invitation_token()
+    representation = repr(token)
+
+    assert token.plaintext not in representation
+    assert token.digest not in representation

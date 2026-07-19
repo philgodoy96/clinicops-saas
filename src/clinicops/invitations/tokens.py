@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from secrets import token_urlsafe
 
@@ -9,8 +9,8 @@ INVITATION_TOKEN_BYTES = 32
 class InvitationToken:
     """One-time plaintext token and its persistence-safe digest."""
 
-    plaintext: str
-    digest: str
+    plaintext: str = field(repr=False)
+    digest: str = field(repr=False)
 
 
 def digest_invitation_token(plaintext_token: str) -> str:
