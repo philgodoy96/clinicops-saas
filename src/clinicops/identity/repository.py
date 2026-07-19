@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from psycopg.errors import UniqueViolation
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +22,16 @@ class UserRepository:
         """Return the global user registered with a canonical email."""
 
         return session.scalar(select(User).where(User.email == canonical_email))
+
+    def get_by_id_for_update(
+        self,
+        session: Session,
+        user_id: UUID,
+    ) -> User | None:
+        """Return and lock a global user for a state-sensitive workflow."""
+
+        statement = select(User).where(User.id == user_id).with_for_update()
+        return session.scalar(statement)
 
     def add_and_flush(
         self,

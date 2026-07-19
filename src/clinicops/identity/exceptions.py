@@ -40,3 +40,17 @@ class EmailAlreadyRegisteredError(IdentityError):
 
     code = "email_already_registered"
     public_message = "The email address is already registered."
+
+
+class UserNotFoundError(IdentityError):
+    """Raised when a required global user does not exist."""
+
+    code = "user_not_found"
+    public_message = "The user was not found."
+
+
+class UserDisabledError(IdentityError):
+    """Raised when an operation requires an active global user."""
+
+    code = "user_disabled"
+    public_message = "The user is disabled."
