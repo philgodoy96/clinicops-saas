@@ -32,7 +32,12 @@ class InvitationRepository:
     ) -> Invitation | None:
         """Return and lock an invitation for a lifecycle transition."""
 
-        statement = select(Invitation).where(Invitation.id == invitation_id).with_for_update()
+        statement = (
+            select(Invitation)
+            .where(Invitation.id == invitation_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return session.scalar(statement)
 
     def get_for_tenant_by_id_for_update(
