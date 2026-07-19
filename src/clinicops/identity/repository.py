@@ -23,6 +23,16 @@ class UserRepository:
 
         return session.scalar(select(User).where(User.email == canonical_email))
 
+    def get_by_email_for_update(
+        self,
+        session: Session,
+        canonical_email: str,
+    ) -> User | None:
+        """Return and lock the global user registered with an email."""
+
+        statement = select(User).where(User.email == canonical_email).with_for_update()
+        return session.scalar(statement)
+
     def get_by_id_for_update(
         self,
         session: Session,

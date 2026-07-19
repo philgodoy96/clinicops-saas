@@ -16,6 +16,25 @@ PENDING_INVITATION_UNIQUE_INDEX = "uq_invitations_one_pending_per_tenant_email"
 class InvitationRepository:
     """Persistence operations for tenant invitations."""
 
+    def get_by_digest(
+        self,
+        session: Session,
+        token_digest: str,
+    ) -> Invitation | None:
+        """Return the invitation identified by a token digest."""
+
+        return session.scalar(select(Invitation).where(Invitation.token_digest == token_digest))
+
+    def get_by_id_for_update(
+        self,
+        session: Session,
+        invitation_id: UUID,
+    ) -> Invitation | None:
+        """Return and lock an invitation for a lifecycle transition."""
+
+        statement = select(Invitation).where(Invitation.id == invitation_id).with_for_update()
+        return session.scalar(statement)
+
     def get_pending_for_update(
         self,
         session: Session,
