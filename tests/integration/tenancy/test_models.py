@@ -55,7 +55,7 @@ def test_tenant_and_memberships_persist_with_lifecycle_defaults(
 ) -> None:
     owner_user = create_user("owner")
     staff_user = create_user("staff")
-    tenant = Tenant(name="São Lucas Clinic")
+    tenant = Tenant(name="Northstar Health Clinic")
     owner_membership = Membership(
         tenant=tenant,
         user=owner_user,
@@ -84,7 +84,7 @@ def test_tenant_and_memberships_persist_with_lifecycle_defaults(
     stored_tenant = db_session.scalar(select(Tenant).where(Tenant.id == tenant_id))
 
     assert stored_tenant is not None
-    assert stored_tenant.name == "São Lucas Clinic"
+    assert stored_tenant.name == "Northstar Health Clinic"
     assert stored_tenant.status is TenantStatus.ACTIVE
     assert stored_tenant.disabled_at is None
     assert stored_tenant.created_at.tzinfo is not None

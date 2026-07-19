@@ -100,7 +100,7 @@ def test_create_tenant_persists_normalized_name_and_initial_owner(
     created_tenant = service.execute(
         db_session,
         CreateTenantCommand(
-            name="  São Lucas Clinic  ",
+            name="  Northstar Health Clinic  ",
             owner_user_id=owner_user.id,
         ),
     )
@@ -108,7 +108,7 @@ def test_create_tenant_persists_normalized_name_and_initial_owner(
     stored_tenant = db_session.scalar(select(Tenant).where(Tenant.id == created_tenant.id))
 
     assert stored_tenant is not None
-    assert created_tenant.name == "São Lucas Clinic"
+    assert created_tenant.name == "Northstar Health Clinic"
     assert created_tenant.status is TenantStatus.ACTIVE
     assert created_tenant.owner_user_id == owner_user.id
     assert created_tenant.created_at.tzinfo is not None
