@@ -210,6 +210,8 @@ def upgrade() -> None:
             ["replaced_by_token_id"],
             ["refresh_tokens.id"],
             name=("fk_refresh_tokens_replaced_by_token_id_refresh_tokens"),
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

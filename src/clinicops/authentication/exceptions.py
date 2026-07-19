@@ -22,6 +22,13 @@ class InvalidCredentialsError(AuthenticationError):
     public_message = "The email or password is invalid."
 
 
+class AuthenticationSessionInactiveError(AuthenticationError):
+    """Raised when an authentication session cannot be used."""
+
+    code = "authentication_session_inactive"
+    public_message = "The authentication session is not active."
+
+
 class AccessTokenInvalidError(AuthenticationError):
     """Raised when an access token cannot be trusted."""
 
@@ -37,7 +44,14 @@ class AccessTokenExpiredError(AuthenticationError):
 
 
 class RefreshTokenInvalidError(AuthenticationError):
-    """Raised when a refresh token is malformed."""
+    """Raised when a refresh token cannot be trusted."""
 
     code = "refresh_token_invalid"
     public_message = "The refresh token is invalid."
+
+
+class RefreshTokenExpiredError(AuthenticationError):
+    """Raised when a refresh token or its session has expired."""
+
+    code = "refresh_token_expired"
+    public_message = "The refresh token has expired."
