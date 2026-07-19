@@ -1,5 +1,11 @@
 from sqlalchemy import MetaData
 
+from clinicops.authentication.models import (
+    AuthSession,
+    AuthSessionStatus,
+    RefreshToken,
+    RefreshTokenStatus,
+)
 from clinicops.db.base import Base
 from clinicops.identity.models import PasswordCredential, User, UserStatus
 from clinicops.invitations.models import Invitation, InvitationStatus
@@ -14,11 +20,15 @@ from clinicops.tenancy.models import (
 metadata: MetaData = Base.metadata
 
 __all__ = [
+    "AuthSession",
+    "AuthSessionStatus",
     "Invitation",
     "InvitationStatus",
     "Membership",
     "MembershipStatus",
     "PasswordCredential",
+    "RefreshToken",
+    "RefreshTokenStatus",
     "Tenant",
     "TenantRole",
     "TenantStatus",
