@@ -4,7 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from clinicops.core.config import get_settings
-from clinicops.db.base import Base
+from clinicops.db.models import metadata
 
 config = context.config
 
@@ -13,7 +13,7 @@ if config.config_file_name is not None:
 
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-target_metadata = Base.metadata
+target_metadata = metadata
 
 
 def run_migrations_offline() -> None:
