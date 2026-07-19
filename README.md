@@ -335,6 +335,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Implementation Plan](docs/implementation-plan.md)
 - [Engineering Guide](ENGINEERING_GUIDE.md)
 - [Local Development Setup](docs/development/local-setup.md)
+- [Request Tracing Model](docs/architecture/request-tracing.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
