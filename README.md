@@ -337,6 +337,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Local Development Setup](docs/development/local-setup.md)
 - [Request Tracing Model](docs/architecture/request-tracing.md)
 - [Global Identity Model](docs/architecture/global-identity.md)
+- [Tenant and Membership Model](docs/architecture/tenant-membership.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
