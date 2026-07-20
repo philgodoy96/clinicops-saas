@@ -1,6 +1,10 @@
 from fastapi import APIRouter
 
-from clinicops.api.v1 import health
+from clinicops.api.v1.health import router as health_router
 
 router = APIRouter()
-router.include_router(health.router, prefix="/health", tags=["health"])
+router.include_router(
+    health_router,
+    prefix="/health",
+    tags=["system"],
+)
