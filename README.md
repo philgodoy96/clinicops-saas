@@ -341,6 +341,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Invitation Lifecycle](docs/architecture/invitation-lifecycle.md)
 - [Authentication Sessions](docs/architecture/authentication-sessions.md)
 - [Tenant Authorization](docs/architecture/tenant-authorization.md)
+- [HTTP API Transport Model](docs/architecture/http-api-transport.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
