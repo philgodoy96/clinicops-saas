@@ -1,0 +1,196 @@
+from datetime import datetime
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from clinicops.invitations.models import InvitationStatus
+from clinicops.tenancy.models import (
+    MembershipStatus,
+    TenantRole,
+    TenantStatus,
+)
+
+TenantName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=120,
+    ),
+]
+InvitedEmail = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=3,
+        max_length=320,
+    ),
+]
+InvitableTenantRole = Literal[
+    TenantRole.ADMIN,
+    TenantRole.STAFF,
+]
+
+
+class CurrentMembershipResponse(BaseModel):
+    """Current caller membership within one available tenant."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    role: TenantRole
+    status: MembershipStatus
+
+
+class TenantSummaryResponse(BaseModel):
+    """Tenant available to the current authenticated user."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    name: TenantName
+    status: TenantStatus
+    current_membership: CurrentMembershipResponse
+
+
+class TenantListResponse(BaseModel):
+    """Collection of tenants available to the current user."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+    )
+
+    items: list[TenantSummaryResponse]
+
+
+class TenantDetailResponse(BaseModel):
+    """Detailed tenant representation with current caller access."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    name: TenantName
+    status: TenantStatus
+    created_at: datetime
+    updated_at: datetime
+    disabled_at: datetime | None
+    current_membership: CurrentMembershipResponse
+
+
+class MembershipResponse(BaseModel):
+    """Public tenant membership representation."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    tenant_id: UUID
+    user_id: UUID
+    role: TenantRole
+    status: MembershipStatus
+    created_at: datetime
+    updated_at: datetime
+    disabled_at: datetime | None
+
+
+class MembershipListResponse(BaseModel):
+    """Collection of memberships within one tenant."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+    )
+
+    items: list[MembershipResponse]
+
+
+class InvitationResponse(BaseModel):
+    """Public tenant invitation representation."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    tenant_id: UUID
+    invited_email: InvitedEmail
+    role: TenantRole
+    status: InvitationStatus
+    expires_at: datetime
+    accepted_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class InvitationListResponse(BaseModel):
+    """Collection of invitations within one tenant."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+    )
+
+    items: list[InvitationResponse]
+
+
+class IssueInvitationRequest(BaseModel):
+    """Request to issue one invitation for the selected tenant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invited_email: InvitedEmail
+    role: InvitableTenantRole
+
+
+class IssuedInvitationResponse(BaseModel):
+    """New invitation and its one-time plaintext token."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    tenant_id: UUID
+    invited_email: InvitedEmail
+    role: InvitableTenantRole
+    expires_at: datetime
+    token: str = Field(
+        min_length=1,
+        repr=False,
+    )
+
+
+class RevokedInvitationResponse(BaseModel):
+    """Public result of a successful invitation revocation."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    invitation_id: UUID
+    tenant_id: UUID
+    revoked_at: datetime
