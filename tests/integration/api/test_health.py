@@ -45,6 +45,6 @@ def test_readiness_returns_service_unavailable_when_database_check_fails(
     response = client.get("/api/v1/health/ready")
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    error = response.json()["error"]
-    assert error["code"] == "database_unavailable"
-    assert error["message"] == "The database is unavailable."
+    body = response.json()
+    assert body["code"] == "database_unavailable"
+    assert body["detail"] == "The database is unavailable."
