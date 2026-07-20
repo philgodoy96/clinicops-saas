@@ -34,3 +34,10 @@ class TenantMembershipDisabledError(TenantAuthorizationError):
 
     code = "tenant_membership_disabled"
     public_message = "The tenant membership is disabled."
+
+
+class TenantPermissionDeniedError(TenantAuthorizationError):
+    """Raised when the current tenant role lacks a permission."""
+
+    code = "tenant_permission_denied"
+    public_message = "The tenant operation is not permitted."
