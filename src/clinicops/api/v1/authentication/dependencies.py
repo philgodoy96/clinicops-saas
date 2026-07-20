@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from clinicops.api.dependencies import get_application_settings
+from clinicops.api.dependencies import ApplicationSettingsDependency
 from clinicops.authentication.access_tokens import AccessTokenCodec
 from clinicops.authentication.config import AuthenticationTokenConfig
 from clinicops.authentication.services.authenticate_user import (
@@ -17,16 +17,10 @@ from clinicops.authentication.services.resolve_principal import (
 from clinicops.authentication.services.revoke_session import (
     RevokeAuthenticationSessionService,
 )
-from clinicops.core.config import Settings
 from clinicops.identity.passwords import (
     Argon2PasswordHasher,
     PasswordHasher,
 )
-
-ApplicationSettingsDependency = Annotated[
-    Settings,
-    Depends(get_application_settings),
-]
 
 
 def get_authentication_token_config(
@@ -85,6 +79,12 @@ def get_authenticate_user_service(
     )
 
 
+AuthenticateUserServiceDependency = Annotated[
+    AuthenticateUserService,
+    Depends(get_authenticate_user_service),
+]
+
+
 def get_refresh_authentication_service(
     access_token_codec: AccessTokenCodecDependency,
 ) -> RefreshAuthenticationService:
@@ -93,6 +93,12 @@ def get_refresh_authentication_service(
     return RefreshAuthenticationService(
         access_token_codec=access_token_codec,
     )
+
+
+RefreshAuthenticationServiceDependency = Annotated[
+    RefreshAuthenticationService,
+    Depends(get_refresh_authentication_service),
+]
 
 
 def get_resolve_authenticated_principal_service(
@@ -105,7 +111,19 @@ def get_resolve_authenticated_principal_service(
     )
 
 
+ResolveAuthenticatedPrincipalServiceDependency = Annotated[
+    ResolveAuthenticatedPrincipalService,
+    Depends(get_resolve_authenticated_principal_service),
+]
+
+
 def get_revoke_authentication_session_service() -> RevokeAuthenticationSessionService:
     """Build the current-session revocation service."""
 
     return RevokeAuthenticationSessionService()
+
+
+RevokeAuthenticationSessionServiceDependency = Annotated[
+    RevokeAuthenticationSessionService,
+    Depends(get_revoke_authentication_session_service),
+]
