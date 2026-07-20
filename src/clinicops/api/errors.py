@@ -1,4 +1,6 @@
+import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, status
@@ -11,14 +13,37 @@ from clinicops.api.middleware.request_context import (
     CORRELATION_ID_HEADER,
     REQUEST_ID_HEADER,
 )
+from clinicops.authentication.exceptions import (
+    AccessTokenExpiredError,
+    AccessTokenInvalidError,
+    AuthenticationSessionExpiredError,
+    AuthenticationSessionInactiveError,
+    AuthenticationSessionNotFoundError,
+    InvalidCredentialsError,
+    RefreshTokenExpiredError,
+    RefreshTokenInvalidError,
+)
+from clinicops.authorization.exceptions import (
+    TenantDisabledError,
+    TenantMembershipDisabledError,
+    TenantMembershipNotFoundError,
+    TenantNotFoundError,
+    TenantPermissionDeniedError,
+)
 from clinicops.core.exceptions import ApplicationError
 from clinicops.core.request_context import get_correlation_id, get_request_id
 from clinicops.db.exceptions import DatabaseUnavailableError
+from clinicops.identity.exceptions import UserDisabledError
+
+logger = logging.getLogger("clinicops.http")
+
+PROBLEM_MEDIA_TYPE = "application/problem+json"
+BEARER_CHALLENGE_HEADER = {"WWW-Authenticate": "Bearer"}
 
 type ErrorLocation = str | int
 
 
-class ValidationErrorDetail(BaseModel):
+class ValidationIssue(BaseModel):
     """Sanitized validation failure exposed to API clients."""
 
     location: list[ErrorLocation]
@@ -26,52 +51,94 @@ class ValidationErrorDetail(BaseModel):
     type: str
 
 
-class ErrorBody(BaseModel):
-    """Standard public API error payload."""
+class ProblemDetails(BaseModel):
+    """RFC 9457-compatible public API problem response."""
 
+    type: str
+    title: str
+    status: int
+    detail: str
     code: str
-    message: str
     request_id: str
     correlation_id: str
-    details: list[ValidationErrorDetail] | None = None
+    errors: list[ValidationIssue] | None = None
 
 
-class ErrorResponse(BaseModel):
-    """Top-level API error response."""
+@dataclass(frozen=True, slots=True)
+class HttpProblemDefinition:
+    """Stable public definition for one HTTP failure class."""
 
-    error: ErrorBody
+    code: str
+    title: str
+    detail: str
 
 
-HTTP_ERROR_DEFINITIONS: dict[int, tuple[str, str]] = {
-    status.HTTP_400_BAD_REQUEST: (
-        "bad_request",
-        "The request could not be processed.",
+HTTP_PROBLEM_DEFINITIONS: dict[int, HttpProblemDefinition] = {
+    status.HTTP_400_BAD_REQUEST: HttpProblemDefinition(
+        code="bad_request",
+        title="Bad request",
+        detail="The request could not be processed.",
     ),
-    status.HTTP_401_UNAUTHORIZED: (
-        "unauthorized",
-        "Authentication is required.",
+    status.HTTP_401_UNAUTHORIZED: HttpProblemDefinition(
+        code="unauthorized",
+        title="Authentication required",
+        detail="Authentication is required.",
     ),
-    status.HTTP_403_FORBIDDEN: (
-        "forbidden",
-        "The requested operation is not allowed.",
+    status.HTTP_403_FORBIDDEN: HttpProblemDefinition(
+        code="forbidden",
+        title="Operation forbidden",
+        detail="The requested operation is not allowed.",
     ),
-    status.HTTP_404_NOT_FOUND: (
-        "not_found",
-        "The requested resource was not found.",
+    status.HTTP_404_NOT_FOUND: HttpProblemDefinition(
+        code="not_found",
+        title="Resource not found",
+        detail="The requested resource was not found.",
     ),
-    status.HTTP_405_METHOD_NOT_ALLOWED: (
-        "method_not_allowed",
-        "The HTTP method is not allowed for this resource.",
+    status.HTTP_405_METHOD_NOT_ALLOWED: HttpProblemDefinition(
+        code="method_not_allowed",
+        title="Method not allowed",
+        detail="The HTTP method is not allowed for this resource.",
     ),
-    status.HTTP_409_CONFLICT: (
-        "conflict",
-        "The request conflicts with the current resource state.",
+    status.HTTP_409_CONFLICT: HttpProblemDefinition(
+        code="conflict",
+        title="Resource conflict",
+        detail="The request conflicts with the current resource state.",
     ),
-    status.HTTP_429_TOO_MANY_REQUESTS: (
-        "rate_limit_exceeded",
-        "Too many requests were received.",
+    status.HTTP_429_TOO_MANY_REQUESTS: HttpProblemDefinition(
+        code="rate_limit_exceeded",
+        title="Rate limit exceeded",
+        detail="Too many requests were received.",
     ),
 }
+
+AUTHENTICATION_ERRORS = (
+    InvalidCredentialsError,
+    AccessTokenInvalidError,
+    AccessTokenExpiredError,
+    AuthenticationSessionNotFoundError,
+    AuthenticationSessionInactiveError,
+    AuthenticationSessionExpiredError,
+    RefreshTokenInvalidError,
+    RefreshTokenExpiredError,
+    UserDisabledError,
+)
+
+TENANT_NOT_FOUND_ERRORS = (
+    TenantNotFoundError,
+    TenantMembershipNotFoundError,
+)
+
+TENANT_FORBIDDEN_ERRORS = (
+    TenantDisabledError,
+    TenantMembershipDisabledError,
+    TenantPermissionDeniedError,
+)
+
+
+def _problem_type(code: str) -> str:
+    """Return the stable problem type URI for one public error code."""
+
+    return f"urn:clinicops:problem:{code}"
 
 
 def _trace_identifiers(request: Request) -> tuple[str, str]:
@@ -97,26 +164,28 @@ def _response_headers(
     return headers
 
 
-def _error_response(
+def _problem_response(
     *,
     request: Request,
     status_code: int,
     code: str,
-    message: str,
-    details: list[ValidationErrorDetail] | None = None,
+    title: str,
+    detail: str,
+    errors: list[ValidationIssue] | None = None,
     additional_headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
-    """Build the standard public API error response."""
+    """Build one public Problem Details response."""
 
     request_id, correlation_id = _trace_identifiers(request)
-    payload = ErrorResponse(
-        error=ErrorBody(
-            code=code,
-            message=message,
-            request_id=request_id,
-            correlation_id=correlation_id,
-            details=details,
-        )
+    payload = ProblemDetails(
+        type=_problem_type(code),
+        title=title,
+        status=status_code,
+        detail=detail,
+        code=code,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        errors=errors,
     )
 
     return JSONResponse(
@@ -127,16 +196,48 @@ def _error_response(
             correlation_id,
             additional_headers,
         ),
+        media_type=PROBLEM_MEDIA_TYPE,
     )
 
 
-def _application_error_status(exception: ApplicationError) -> int:
-    """Map application failures to transport status codes."""
+def _application_problem(
+    exception: ApplicationError,
+) -> tuple[int, str, Mapping[str, str] | None]:
+    """Map an application failure to status, title, and headers."""
 
     if isinstance(exception, DatabaseUnavailableError):
-        return status.HTTP_503_SERVICE_UNAVAILABLE
+        return (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Service unavailable",
+            None,
+        )
 
-    return status.HTTP_400_BAD_REQUEST
+    if isinstance(exception, AUTHENTICATION_ERRORS):
+        return (
+            status.HTTP_401_UNAUTHORIZED,
+            "Authentication failed",
+            BEARER_CHALLENGE_HEADER,
+        )
+
+    if isinstance(exception, TENANT_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, TENANT_FORBIDDEN_ERRORS):
+        return (
+            status.HTTP_403_FORBIDDEN,
+            "Operation forbidden",
+            None,
+        )
+
+    return (
+        status.HTTP_400_BAD_REQUEST,
+        "Application request failed",
+        None,
+    )
 
 
 async def application_error_handler(
@@ -147,11 +248,15 @@ async def application_error_handler(
 
     assert isinstance(exception, ApplicationError)
 
-    return _error_response(
+    status_code, title, additional_headers = _application_problem(exception)
+
+    return _problem_response(
         request=request,
-        status_code=_application_error_status(exception),
+        status_code=status_code,
         code=exception.code,
-        message=exception.public_message,
+        title=title,
+        detail=exception.public_message,
+        additional_headers=additional_headers,
     )
 
 
@@ -163,8 +268,8 @@ async def request_validation_error_handler(
 
     assert isinstance(exception, RequestValidationError)
 
-    details = [
-        ValidationErrorDetail(
+    errors = [
+        ValidationIssue(
             location=list(error["loc"]),
             message=str(error["msg"]),
             type=str(error["type"]),
@@ -172,12 +277,13 @@ async def request_validation_error_handler(
         for error in exception.errors()
     ]
 
-    return _error_response(
+    return _problem_response(
         request=request,
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         code="request_validation_error",
-        message="The request could not be validated.",
-        details=details,
+        title="Request validation failed",
+        detail="The request could not be validated.",
+        errors=errors,
     )
 
 
@@ -189,20 +295,29 @@ async def http_exception_handler(
 
     assert isinstance(exception, StarletteHTTPException)
 
-    code, message = HTTP_ERROR_DEFINITIONS.get(
+    definition = HTTP_PROBLEM_DEFINITIONS.get(
         exception.status_code,
-        (
-            "http_error",
-            "The request could not be completed.",
+        HttpProblemDefinition(
+            code="http_error",
+            title="HTTP request failed",
+            detail="The request could not be completed.",
         ),
     )
+    additional_headers = dict(exception.headers or {})
 
-    return _error_response(
+    if exception.status_code == status.HTTP_401_UNAUTHORIZED:
+        additional_headers.setdefault(
+            "WWW-Authenticate",
+            "Bearer",
+        )
+
+    return _problem_response(
         request=request,
         status_code=exception.status_code,
-        code=code,
-        message=message,
-        additional_headers=exception.headers,
+        code=definition.code,
+        title=definition.title,
+        detail=definition.detail,
+        additional_headers=additional_headers,
     )
 
 
@@ -210,13 +325,23 @@ async def unhandled_exception_handler(
     request: Request,
     exception: Exception,
 ) -> JSONResponse:
-    """Render a generic response for unexpected failures."""
+    """Log and sanitize an unexpected application failure."""
 
-    return _error_response(
+    logger.error(
+        "unhandled_exception",
+        exc_info=(
+            type(exception),
+            exception,
+            exception.__traceback__,
+        ),
+    )
+
+    return _problem_response(
         request=request,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         code="internal_server_error",
-        message="An unexpected error occurred.",
+        title="Internal server error",
+        detail="An unexpected error occurred.",
     )
 
 
