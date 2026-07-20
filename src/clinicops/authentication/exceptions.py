@@ -23,7 +23,7 @@ class InvalidCredentialsError(AuthenticationError):
 
 
 class AuthenticationSessionNotFoundError(AuthenticationError):
-    """Raised when a user-owned authentication session is unavailable."""
+    """Raised when an authentication session is unavailable."""
 
     code = "authentication_session_not_found"
     public_message = "The authentication session was not found."
@@ -34,6 +34,13 @@ class AuthenticationSessionInactiveError(AuthenticationError):
 
     code = "authentication_session_inactive"
     public_message = "The authentication session is not active."
+
+
+class AuthenticationSessionExpiredError(AuthenticationError):
+    """Raised when an authentication session has expired."""
+
+    code = "authentication_session_expired"
+    public_message = "The authentication session has expired."
 
 
 class AccessTokenInvalidError(AuthenticationError):

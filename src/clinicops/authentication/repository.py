@@ -9,6 +9,15 @@ from clinicops.authentication.models import (
     RefreshToken,
     RefreshTokenStatus,
 )
+from clinicops.identity.models import User
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedPrincipalState:
+    """Current persisted state behind an access token."""
+
+    auth_session: AuthSession
+    user: User
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +31,33 @@ class RefreshTokenMetadata:
 
 class AuthenticationRepository:
     """Persistence operations for global authentication sessions."""
+
+    def get_authenticated_principal_state(
+        self,
+        session: Session,
+        user_id: UUID,
+        session_id: UUID,
+    ) -> AuthenticatedPrincipalState | None:
+        """Return current user and session state without row locking."""
+
+        row = session.execute(
+            select(AuthSession, User)
+            .join(User, User.id == AuthSession.user_id)
+            .where(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+            )
+        ).one_or_none()
+
+        if row is None:
+            return None
+
+        auth_session, user = row
+
+        return AuthenticatedPrincipalState(
+            auth_session=auth_session,
+            user=user,
+        )
 
     def get_refresh_token_metadata(
         self,
