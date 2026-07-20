@@ -340,6 +340,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Tenant and Membership Model](docs/architecture/tenant-membership.md)
 - [Invitation Lifecycle](docs/architecture/invitation-lifecycle.md)
 - [Authentication Sessions](docs/architecture/authentication-sessions.md)
+- [Tenant Authorization](docs/architecture/tenant-authorization.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
