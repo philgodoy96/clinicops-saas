@@ -194,3 +194,27 @@ class RevokedInvitationResponse(BaseModel):
     invitation_id: UUID
     tenant_id: UUID
     revoked_at: datetime
+
+
+class CreateTenantRequest(BaseModel):
+    """Request to create a tenant for the authenticated user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: TenantName
+
+
+class CreatedTenantResponse(BaseModel):
+    """Public result of tenant creation."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    id: UUID
+    name: TenantName
+    status: TenantStatus
+    owner_user_id: UUID
+    created_at: datetime
