@@ -82,3 +82,13 @@ class MembershipAdministrationRepository:
 
         session.flush()
         session.refresh(membership)
+
+    def delete_and_flush(
+        self,
+        session: Session,
+        membership: Membership,
+    ) -> None:
+        """Delete one membership without committing the transaction."""
+
+        session.delete(membership)
+        session.flush()
