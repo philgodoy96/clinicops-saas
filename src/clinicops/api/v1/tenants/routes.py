@@ -8,6 +8,7 @@ from clinicops.api.v1.authentication.dependencies import (
     AuthenticatedPrincipalDependency,
 )
 from clinicops.api.v1.tenants.dependencies import (
+    CreateTenantServiceDependency,
     GetTenantDetailsServiceDependency,
     IssueInvitationServiceDependency,
     ListAvailableTenantsServiceDependency,
@@ -17,6 +18,8 @@ from clinicops.api.v1.tenants.dependencies import (
     require_tenant_permission,
 )
 from clinicops.api.v1.tenants.schemas import (
+    CreatedTenantResponse,
+    CreateTenantRequest,
     CurrentMembershipResponse,
     InvitationListResponse,
     InvitationResponse,
@@ -44,6 +47,9 @@ from clinicops.invitations.services.revoke_invitation import (
     RevokeInvitationCommand,
 )
 from clinicops.tenancy.models import MembershipStatus
+from clinicops.tenancy.services.create_tenant import (
+    CreateTenantCommand,
+)
 from clinicops.tenancy.services.queries import (
     AvailableTenant,
     GetTenantDetailsCommand,
@@ -172,6 +178,32 @@ def _invitation_response(
         created_at=result.created_at,
         updated_at=result.updated_at,
     )
+
+
+@router.post(
+    "",
+    response_model=CreatedTenantResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a tenant",
+)
+def create_tenant(
+    payload: CreateTenantRequest,
+    principal: AuthenticatedPrincipalDependency,
+    session: DatabaseSessionDependency,
+    service: CreateTenantServiceDependency,
+) -> CreatedTenantResponse:
+    """Create a tenant with the authenticated user as owner."""
+
+    result = service.execute(
+        session,
+        CreateTenantCommand(
+            name=payload.name,
+            owner_user_id=principal.user_id,
+        ),
+    )
+    session.commit()
+
+    return CreatedTenantResponse.model_validate(result)
 
 
 @router.get(

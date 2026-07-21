@@ -28,6 +28,9 @@ from clinicops.invitations.services.queries import (
 from clinicops.invitations.services.revoke_invitation import (
     RevokeInvitationService,
 )
+from clinicops.tenancy.services.create_tenant import (
+    CreateTenantService,
+)
 from clinicops.tenancy.services.queries import (
     GetTenantDetailsService,
     ListAvailableTenantsService,
@@ -99,6 +102,18 @@ def require_tenant_permission(
         )
 
     return dependency
+
+
+def get_create_tenant_service() -> CreateTenantService:
+    """Build the tenant creation service."""
+
+    return CreateTenantService()
+
+
+CreateTenantServiceDependency = Annotated[
+    CreateTenantService,
+    Depends(get_create_tenant_service),
+]
 
 
 def get_list_available_tenants_service() -> ListAvailableTenantsService:
