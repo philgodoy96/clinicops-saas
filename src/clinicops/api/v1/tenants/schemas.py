@@ -31,6 +31,10 @@ InvitableTenantRole = Literal[
     TenantRole.ADMIN,
     TenantRole.STAFF,
 ]
+ManageableTenantRole = Literal[
+    TenantRole.ADMIN,
+    TenantRole.STAFF,
+]
 
 
 class CurrentMembershipResponse(BaseModel):
@@ -218,3 +222,60 @@ class CreatedTenantResponse(BaseModel):
     status: TenantStatus
     owner_user_id: UUID
     created_at: datetime
+
+
+class ChangeMembershipRoleRequest(BaseModel):
+    """Request to assign an administrative membership role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: ManageableTenantRole
+
+
+class ChangedMembershipRoleResponse(BaseModel):
+    """Public result of a membership role change."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    membership_id: UUID
+    tenant_id: UUID
+    user_id: UUID
+    previous_role: TenantRole
+    role: TenantRole
+    updated_at: datetime
+
+
+class DisabledMembershipResponse(BaseModel):
+    """Public result of disabling a tenant membership."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    membership_id: UUID
+    tenant_id: UUID
+    user_id: UUID
+    role: TenantRole
+    disabled_at: datetime
+
+
+class EnabledMembershipResponse(BaseModel):
+    """Public result of enabling a tenant membership."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    membership_id: UUID
+    tenant_id: UUID
+    user_id: UUID
+    role: TenantRole
+    updated_at: datetime
