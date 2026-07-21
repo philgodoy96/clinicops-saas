@@ -558,6 +558,105 @@ Ownership-specific behavior belongs in services and policies.
 
 ---
 
+## Billing Module
+
+The implemented billing module uses the current top-level domain layout under
+`src/clinicops`.
+
+```text
+src/clinicops/billing/
+├── __init__.py
+├── catalog.py
+├── enums.py
+├── exceptions.py
+├── fingerprints.py
+├── idempotency_keys.py
+├── models.py
+├── state_machine.py
+└── repositories/
+    ├── __init__.py
+    ├── billing_customer_repository.py
+    ├── subscription_repository.py
+    ├── provider_operation_repository.py
+    └── billing_webhook_event_repository.py
+```
+
+Responsibilities are separated by concrete architectural boundary:
+
+```text
+catalog.py
+    -> server-owned plans, billing intervals, prices, and provider mappings
+
+enums.py
+    -> stable billing lifecycle and persistence identifiers
+
+exceptions.py
+    -> billing-domain application errors
+
+fingerprints.py
+    -> deterministic command fingerprints
+
+idempotency_keys.py
+    -> validation of opaque client idempotency keys
+
+state_machine.py
+    -> pure subscription lifecycle rules
+
+models.py
+    -> SQLAlchemy billing persistence models and PostgreSQL enum bindings
+
+repositories/
+    -> billing persistence queries, row locks, flushes, and known-conflict
+       translation
+```
+
+Billing currently uses one `models.py` file because the four mapped entities
+belong to the same billing persistence boundary and remain manageable
+together.
+
+The repository package is justified by the four distinct persistence
+responsibilities:
+
+```text
+BillingCustomer
+Subscription
+ProviderOperation
+BillingWebhookEvent
+```
+
+The billing module does not currently contain:
+
+```text
+api/
+services/
+providers/
+jobs/
+workers/
+```
+
+Those directories are added only when the corresponding application,
+provider, transport, or background-processing responsibilities are
+implemented.
+
+Billing models are registered centrally through:
+
+```text
+src/clinicops/db/models.py
+```
+
+Alembic uses the shared metadata exported from that module.
+
+The current implementation follows the repository's actual top-level domain
+layout:
+
+```text
+src/clinicops/billing/
+```
+
+It does not introduce a parallel `modules/billing/` tree.
+
+---
+
 ## 10. Naming Guidance
 
 Use entity-oriented names for persistent models and transport schemas.
