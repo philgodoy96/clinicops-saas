@@ -34,6 +34,22 @@ from clinicops.core.exceptions import ApplicationError
 from clinicops.core.request_context import get_correlation_id, get_request_id
 from clinicops.db.exceptions import DatabaseUnavailableError
 from clinicops.identity.exceptions import UserDisabledError
+from clinicops.invitations.exceptions import (
+    InvitationActorNotAuthorizedError,
+    InvitationAlreadyAcceptedError,
+    InvitationAlreadyPendingError,
+    InvitationExpiredError,
+    InvitationIssuerNotAuthorizedError,
+    InvitationMembershipAlreadyExistsError,
+    InvitationNotFoundError,
+    InvitationRevokedError,
+)
+from clinicops.tenancy.exceptions import (
+    TenantDisabledError as TenancyTenantDisabledError,
+)
+from clinicops.tenancy.exceptions import (
+    TenantNotFoundError as TenancyTenantNotFoundError,
+)
 
 logger = logging.getLogger("clinicops.http")
 
@@ -126,12 +142,29 @@ AUTHENTICATION_ERRORS = (
 TENANT_NOT_FOUND_ERRORS = (
     TenantNotFoundError,
     TenantMembershipNotFoundError,
+    TenancyTenantNotFoundError,
 )
 
 TENANT_FORBIDDEN_ERRORS = (
     TenantDisabledError,
     TenantMembershipDisabledError,
     TenantPermissionDeniedError,
+    TenancyTenantDisabledError,
+)
+
+INVITATION_NOT_FOUND_ERRORS = (InvitationNotFoundError,)
+
+INVITATION_FORBIDDEN_ERRORS = (
+    InvitationIssuerNotAuthorizedError,
+    InvitationActorNotAuthorizedError,
+)
+
+INVITATION_CONFLICT_ERRORS = (
+    InvitationAlreadyPendingError,
+    InvitationMembershipAlreadyExistsError,
+    InvitationAlreadyAcceptedError,
+    InvitationRevokedError,
+    InvitationExpiredError,
 )
 
 
@@ -230,6 +263,27 @@ def _application_problem(
         return (
             status.HTTP_403_FORBIDDEN,
             "Operation forbidden",
+            None,
+        )
+
+    if isinstance(exception, INVITATION_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, INVITATION_FORBIDDEN_ERRORS):
+        return (
+            status.HTTP_403_FORBIDDEN,
+            "Operation forbidden",
+            None,
+        )
+
+    if isinstance(exception, INVITATION_CONFLICT_ERRORS):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
             None,
         )
 

@@ -19,6 +19,15 @@ from clinicops.authorization.services.resolve_tenant_context import (
     ResolveTenantContextService,
     TenantContext,
 )
+from clinicops.invitations.services.issue_invitation import (
+    IssueInvitationService,
+)
+from clinicops.invitations.services.queries import (
+    ListTenantInvitationsService,
+)
+from clinicops.invitations.services.revoke_invitation import (
+    RevokeInvitationService,
+)
 from clinicops.tenancy.services.queries import (
     GetTenantDetailsService,
     ListAvailableTenantsService,
@@ -125,4 +134,40 @@ def get_list_tenant_memberships_service() -> ListTenantMembershipsService:
 ListTenantMembershipsServiceDependency = Annotated[
     ListTenantMembershipsService,
     Depends(get_list_tenant_memberships_service),
+]
+
+
+def get_list_tenant_invitations_service() -> ListTenantInvitationsService:
+    """Build the tenant-invitation query service."""
+
+    return ListTenantInvitationsService()
+
+
+ListTenantInvitationsServiceDependency = Annotated[
+    ListTenantInvitationsService,
+    Depends(get_list_tenant_invitations_service),
+]
+
+
+def get_issue_invitation_service() -> IssueInvitationService:
+    """Build the invitation issuance service."""
+
+    return IssueInvitationService()
+
+
+IssueInvitationServiceDependency = Annotated[
+    IssueInvitationService,
+    Depends(get_issue_invitation_service),
+]
+
+
+def get_revoke_invitation_service() -> RevokeInvitationService:
+    """Build the invitation revocation service."""
+
+    return RevokeInvitationService()
+
+
+RevokeInvitationServiceDependency = Annotated[
+    RevokeInvitationService,
+    Depends(get_revoke_invitation_service),
 ]
