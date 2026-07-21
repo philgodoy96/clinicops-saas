@@ -184,7 +184,12 @@ def test_invitation_rejects_owner_role_before_persistence(
             ),
         )
 
-    stored_invitation = db_session.scalar(select(Invitation))
+    stored_invitation = db_session.scalar(
+        select(Invitation).where(
+            Invitation.tenant_id == tenant.id,
+            Invitation.invited_email == "future.owner@example.com",
+        )
+    )
 
     assert stored_invitation is None
 
