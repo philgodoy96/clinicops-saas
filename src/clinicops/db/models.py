@@ -6,6 +6,12 @@ from clinicops.authentication.models import (
     RefreshToken,
     RefreshTokenStatus,
 )
+from clinicops.billing.models import (
+    BillingCustomer,
+    BillingWebhookEvent,
+    ProviderOperation,
+    Subscription,
+)
 from clinicops.db.base import Base
 from clinicops.identity.models import PasswordCredential, User, UserStatus
 from clinicops.invitations.models import Invitation, InvitationStatus
@@ -22,13 +28,17 @@ metadata: MetaData = Base.metadata
 __all__ = [
     "AuthSession",
     "AuthSessionStatus",
+    "BillingCustomer",
+    "BillingWebhookEvent",
     "Invitation",
     "InvitationStatus",
     "Membership",
     "MembershipStatus",
     "PasswordCredential",
+    "ProviderOperation",
     "RefreshToken",
     "RefreshTokenStatus",
+    "Subscription",
     "Tenant",
     "TenantRole",
     "TenantStatus",
