@@ -28,13 +28,25 @@ from clinicops.invitations.services.queries import (
 from clinicops.invitations.services.revoke_invitation import (
     RevokeInvitationService,
 )
+from clinicops.tenancy.services.change_membership_role import (
+    ChangeMembershipRoleService,
+)
 from clinicops.tenancy.services.create_tenant import (
     CreateTenantService,
+)
+from clinicops.tenancy.services.disable_membership import (
+    DisableMembershipService,
+)
+from clinicops.tenancy.services.enable_membership import (
+    EnableMembershipService,
 )
 from clinicops.tenancy.services.queries import (
     GetTenantDetailsService,
     ListAvailableTenantsService,
     ListTenantMembershipsService,
+)
+from clinicops.tenancy.services.remove_membership import (
+    RemoveMembershipService,
 )
 
 
@@ -113,6 +125,54 @@ def get_create_tenant_service() -> CreateTenantService:
 CreateTenantServiceDependency = Annotated[
     CreateTenantService,
     Depends(get_create_tenant_service),
+]
+
+
+def get_change_membership_role_service() -> ChangeMembershipRoleService:
+    """Build the membership role-management service."""
+
+    return ChangeMembershipRoleService()
+
+
+ChangeMembershipRoleServiceDependency = Annotated[
+    ChangeMembershipRoleService,
+    Depends(get_change_membership_role_service),
+]
+
+
+def get_disable_membership_service() -> DisableMembershipService:
+    """Build the membership-disable service."""
+
+    return DisableMembershipService()
+
+
+DisableMembershipServiceDependency = Annotated[
+    DisableMembershipService,
+    Depends(get_disable_membership_service),
+]
+
+
+def get_enable_membership_service() -> EnableMembershipService:
+    """Build the membership-enable service."""
+
+    return EnableMembershipService()
+
+
+EnableMembershipServiceDependency = Annotated[
+    EnableMembershipService,
+    Depends(get_enable_membership_service),
+]
+
+
+def get_remove_membership_service() -> RemoveMembershipService:
+    """Build the membership-removal service."""
+
+    return RemoveMembershipService()
+
+
+RemoveMembershipServiceDependency = Annotated[
+    RemoveMembershipService,
+    Depends(get_remove_membership_service),
 ]
 
 
