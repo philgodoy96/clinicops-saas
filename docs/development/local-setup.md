@@ -158,7 +158,35 @@ The application does not create or modify the schema automatically during startu
 
 ---
 
-## 8. Run the API
+## 8. Bootstrap the initial local user
+
+ClinicOps uses invitation-based onboarding. Before the first tenant can be
+created, bootstrap one global user:
+
+```powershell
+uv run python -m clinicops.cli.bootstrap_user
+```
+
+The command reads:
+
+```env
+CLINICOPS_BOOTSTRAP_USER_EMAIL=
+CLINICOPS_BOOTSTRAP_USER_PASSWORD=
+```
+
+It creates the global identity and password credential through the identity
+application service. It does not create a tenant or run automatically during
+application startup.
+
+Repeated execution for an existing email is idempotent and does not reset the
+stored password.
+
+For the complete behavior and troubleshooting guidance, see
+[`local-bootstrap.md`](local-bootstrap.md).
+
+---
+
+## 9. Run the API
 
 Start the FastAPI development server:
 
@@ -192,7 +220,7 @@ Ctrl + C
 
 ---
 
-## 9. Health Endpoints
+## 10. Health Endpoints
 
 ### Liveness
 
@@ -250,7 +278,7 @@ CLINICOPS_DATABASE_CONNECT_TIMEOUT_SECONDS
 
 ---
 
-## 10. Inspect Registered API Paths
+## 11. Inspect Registered API Paths
 
 Use the generated OpenAPI schema to inspect public endpoints:
 
@@ -266,7 +294,7 @@ uv run python -c "from clinicops.main import app; print([(path, list(methods)) f
 
 ---
 
-## 11. Run Automated Tests
+## 12. Run Automated Tests
 
 Ensure PostgreSQL is running:
 
@@ -298,7 +326,7 @@ Integration database tests use the local PostgreSQL instance configured through 
 
 ---
 
-## 12. Run Quality Checks
+## 13. Run Quality Checks
 
 Format the code:
 
@@ -351,7 +379,7 @@ uv build
 
 ---
 
-## 13. Create a Database Migration
+## 14. Create a Database Migration
 
 After changing SQLAlchemy models, create a migration:
 
@@ -372,7 +400,7 @@ Generated migrations must not be accepted without reviewing their upgrade and do
 
 ---
 
-## 14. Stop or Reset Local Infrastructure
+## 15. Stop or Reset Local Infrastructure
 
 Stop the PostgreSQL container while preserving its data:
 
@@ -396,7 +424,7 @@ Removing the volume permanently deletes the local PostgreSQL data.
 
 ---
 
-## 15. Common Troubleshooting
+## 16. Common Troubleshooting
 
 ### PostgreSQL Port Conflict
 
@@ -466,7 +494,7 @@ uv sync --locked --all-groups
 
 ---
 
-## 16. Local Development Checklist
+## 17. Local Development Checklist
 
 Before starting application work:
 

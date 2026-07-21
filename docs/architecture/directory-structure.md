@@ -56,6 +56,9 @@ clinicops-saas/
 ├── src/
 │   └── clinicops/
 │       ├── api/
+│       ├── cli/
+│       │   ├── __init__.py
+│       │   └── bootstrap_user.py
 │       ├── core/
 │       ├── db/
 │       ├── modules/
@@ -257,6 +260,21 @@ Possible responsibilities include:
 - centralized error mapping.
 
 Module-specific routes remain inside their owning modules.
+
+---
+
+### `cli`
+
+Contains explicit operational transport boundaries that compose application
+services outside HTTP and worker processes.
+
+CLI modules own their outer database transaction but do not reimplement
+domain or application rules. They are executed manually and are not imported
+as application-startup side effects.
+
+The initial command,
+`python -m clinicops.cli.bootstrap_user`, creates the first local global
+identity through `CreateUserService`.
 
 ---
 
