@@ -68,3 +68,45 @@ class InvalidOwnershipTransferError(TenancyError):
 
     code = "invalid_ownership_transfer"
     public_message = "The ownership transfer is invalid."
+
+
+class MembershipActorNotAuthorizedError(TenancyError):
+    """Raised when the actor cannot administer tenant memberships."""
+
+    code = "membership_actor_not_authorized"
+    public_message = "The actor cannot manage tenant memberships."
+
+
+class MembershipRoleNotAllowedError(TenancyError):
+    """Raised when a generic membership update requests a forbidden role."""
+
+    code = "membership_role_not_allowed"
+    public_message = "The membership role is not allowed."
+
+
+class MembershipOwnerProtectedError(TenancyError):
+    """Raised when a generic workflow targets the active owner."""
+
+    code = "membership_owner_protected"
+    public_message = "The tenant owner membership is protected."
+
+
+class MembershipSelfManagementNotAllowedError(TenancyError):
+    """Raised when an actor targets their own membership."""
+
+    code = "membership_self_management_not_allowed"
+    public_message = "The actor cannot manage their own membership."
+
+
+class MembershipAlreadyDisabledError(TenancyError):
+    """Raised when a disabled membership is disabled again."""
+
+    code = "membership_already_disabled"
+    public_message = "The membership is already disabled."
+
+
+class MembershipAlreadyActiveError(TenancyError):
+    """Raised when an active membership is enabled again."""
+
+    code = "membership_already_active"
+    public_message = "The membership is already active."
