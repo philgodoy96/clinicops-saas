@@ -50,7 +50,17 @@ from clinicops.invitations.exceptions import (
     InvitationTokenInvalidError,
 )
 from clinicops.tenancy.exceptions import (
-    InvalidTenantNameError as TenancyInvalidTenantNameError,
+    InvalidOwnershipTransferError,
+    InvalidTenantNameError,
+    MembershipActorNotAuthorizedError,
+    MembershipAlreadyActiveError,
+    MembershipAlreadyDisabledError,
+    MembershipDisabledError,
+    MembershipNotFoundError,
+    MembershipOwnerProtectedError,
+    MembershipRoleNotAllowedError,
+    MembershipSelfManagementNotAllowedError,
+    TenantOwnershipConflictError,
 )
 from clinicops.tenancy.exceptions import (
     TenantDisabledError as TenancyTenantDisabledError,
@@ -178,9 +188,25 @@ INVITATION_CONFLICT_ERRORS = (
 ONBOARDING_NOT_FOUND_ERRORS = (UserNotFoundError,)
 
 ONBOARDING_BAD_REQUEST_ERRORS = (
-    TenancyInvalidTenantNameError,
+    InvalidTenantNameError,
     InvitationTokenInvalidError,
     InvitationPasswordRequiredError,
+)
+
+MEMBERSHIP_ADMINISTRATION_NOT_FOUND_ERRORS = (MembershipNotFoundError,)
+
+MEMBERSHIP_ADMINISTRATION_FORBIDDEN_ERRORS = (MembershipActorNotAuthorizedError,)
+
+MEMBERSHIP_ADMINISTRATION_BAD_REQUEST_ERRORS = (MembershipRoleNotAllowedError,)
+
+MEMBERSHIP_ADMINISTRATION_CONFLICT_ERRORS = (
+    MembershipDisabledError,
+    MembershipOwnerProtectedError,
+    MembershipSelfManagementNotAllowedError,
+    MembershipAlreadyDisabledError,
+    MembershipAlreadyActiveError,
+    TenantOwnershipConflictError,
+    InvalidOwnershipTransferError,
 )
 
 
@@ -314,6 +340,46 @@ def _application_problem(
         return (
             status.HTTP_400_BAD_REQUEST,
             "Application request failed",
+            None,
+        )
+
+    if isinstance(
+        exception,
+        MEMBERSHIP_ADMINISTRATION_NOT_FOUND_ERRORS,
+    ):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(
+        exception,
+        MEMBERSHIP_ADMINISTRATION_FORBIDDEN_ERRORS,
+    ):
+        return (
+            status.HTTP_403_FORBIDDEN,
+            "Operation forbidden",
+            None,
+        )
+
+    if isinstance(
+        exception,
+        MEMBERSHIP_ADMINISTRATION_BAD_REQUEST_ERRORS,
+    ):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
+            None,
+        )
+
+    if isinstance(
+        exception,
+        MEMBERSHIP_ADMINISTRATION_CONFLICT_ERRORS,
+    ):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
             None,
         )
 
