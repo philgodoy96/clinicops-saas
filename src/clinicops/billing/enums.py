@@ -37,3 +37,23 @@ class ProviderOperationType(StrEnum):
     CREATE_SUBSCRIPTION = "create_subscription"
     CHANGE_PLAN = "change_plan"
     CANCEL_SUBSCRIPTION = "cancel_subscription"
+
+
+class ProviderOperationStatus(StrEnum):
+    """Durable outbound provider-operation lifecycle states."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    SUCCEEDED = "succeeded"
+    FAILED_RETRYABLE = "failed_retryable"
+    FAILED_TERMINAL = "failed_terminal"
+
+
+class WebhookEventStatus(StrEnum):
+    """Durable billing webhook-event lifecycle states."""
+
+    RECEIVED = "received"
+    PROCESSED = "processed"
+    IGNORED = "ignored"
+    FAILED_RETRYABLE = "failed_retryable"
+    FAILED_TERMINAL = "failed_terminal"
