@@ -150,3 +150,45 @@ class BillingPeriodBoundaryNotReachedError(BillingError):
 
     code = "billing_period_boundary_not_reached"
     public_message = "The current billing period has not ended yet."
+
+
+class BillingCustomerAlreadyExistsError(BillingError):
+    """Raised when a tenant already has a customer for the provider."""
+
+    code = "billing_customer_already_exists"
+    public_message = "A billing customer already exists for this tenant and provider."
+
+
+class BillingProviderCustomerAlreadyLinkedError(BillingError):
+    """Raised when a provider customer identifier is already linked."""
+
+    code = "billing_provider_customer_already_linked"
+    public_message = "The provider customer is already linked to another tenant."
+
+
+class BillingSubscriptionAlreadyExistsError(BillingError):
+    """Raised when a tenant already has its V1 subscription lifecycle."""
+
+    code = "billing_subscription_already_exists"
+    public_message = "A billing subscription already exists for this tenant."
+
+
+class BillingProviderSubscriptionAlreadyLinkedError(BillingError):
+    """Raised when a provider subscription identifier is already linked."""
+
+    code = "billing_provider_subscription_already_linked"
+    public_message = "The provider subscription is already linked to another tenant."
+
+
+class ProviderOperationAlreadyExistsError(BillingError):
+    """Raised when a provider operation idempotency scope already exists."""
+
+    code = "provider_operation_already_exists"
+    public_message = "The billing provider operation already exists."
+
+
+class BillingWebhookEventAlreadyExistsError(BillingError):
+    """Raised when the provider event has already been persisted."""
+
+    code = "billing_webhook_event_already_exists"
+    public_message = "The billing webhook event has already been received."
