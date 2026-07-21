@@ -28,3 +28,12 @@ class BillingProvider(StrEnum):
     """Supported payment-provider identifiers."""
 
     FAKE = "fake"
+
+
+class ProviderOperationType(StrEnum):
+    """Supported outbound payment-provider operation types."""
+
+    CREATE_CUSTOMER = "create_customer"
+    CREATE_SUBSCRIPTION = "create_subscription"
+    CHANGE_PLAN = "change_plan"
+    CANCEL_SUBSCRIPTION = "cancel_subscription"
