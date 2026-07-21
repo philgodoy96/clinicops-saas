@@ -343,6 +343,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Tenant Authorization](docs/architecture/tenant-authorization.md)
 - [HTTP API Transport Model](docs/architecture/http-api-transport.md)
 - [Tenant API Authorization Model](docs/architecture/tenant-api-authorization.md)
+- [Tenant Onboarding Model](docs/architecture/tenant-onboarding.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
