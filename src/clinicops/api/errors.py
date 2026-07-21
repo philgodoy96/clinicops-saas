@@ -33,7 +33,10 @@ from clinicops.authorization.exceptions import (
 from clinicops.core.exceptions import ApplicationError
 from clinicops.core.request_context import get_correlation_id, get_request_id
 from clinicops.db.exceptions import DatabaseUnavailableError
-from clinicops.identity.exceptions import UserDisabledError
+from clinicops.identity.exceptions import (
+    UserDisabledError,
+    UserNotFoundError,
+)
 from clinicops.invitations.exceptions import (
     InvitationActorNotAuthorizedError,
     InvitationAlreadyAcceptedError,
@@ -42,7 +45,12 @@ from clinicops.invitations.exceptions import (
     InvitationIssuerNotAuthorizedError,
     InvitationMembershipAlreadyExistsError,
     InvitationNotFoundError,
+    InvitationPasswordRequiredError,
     InvitationRevokedError,
+    InvitationTokenInvalidError,
+)
+from clinicops.tenancy.exceptions import (
+    InvalidTenantNameError as TenancyInvalidTenantNameError,
 )
 from clinicops.tenancy.exceptions import (
     TenantDisabledError as TenancyTenantDisabledError,
@@ -167,6 +175,14 @@ INVITATION_CONFLICT_ERRORS = (
     InvitationExpiredError,
 )
 
+ONBOARDING_NOT_FOUND_ERRORS = (UserNotFoundError,)
+
+ONBOARDING_BAD_REQUEST_ERRORS = (
+    TenancyInvalidTenantNameError,
+    InvitationTokenInvalidError,
+    InvitationPasswordRequiredError,
+)
+
 
 def _problem_type(code: str) -> str:
     """Return the stable problem type URI for one public error code."""
@@ -284,6 +300,20 @@ def _application_problem(
         return (
             status.HTTP_409_CONFLICT,
             "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, ONBOARDING_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, ONBOARDING_BAD_REQUEST_ERRORS):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
             None,
         )
 
