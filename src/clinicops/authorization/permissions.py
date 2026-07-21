@@ -8,6 +8,7 @@ class TenantPermission(StrEnum):
     MEMBER_READ = "member:read"
     MEMBER_INVITE = "member:invite"
     MEMBER_MANAGE = "member:manage"
+    OWNERSHIP_TRANSFER = "ownership:transfer"
     INVITATION_READ = "invitation:read"
     INVITATION_CREATE = "invitation:create"
     INVITATION_REVOKE = "invitation:revoke"

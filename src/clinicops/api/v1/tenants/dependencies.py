@@ -48,6 +48,9 @@ from clinicops.tenancy.services.queries import (
 from clinicops.tenancy.services.remove_membership import (
     RemoveMembershipService,
 )
+from clinicops.tenancy.services.transfer_ownership import (
+    TransferTenantOwnershipService,
+)
 
 
 def get_resolve_tenant_context_service() -> ResolveTenantContextService:
@@ -173,6 +176,18 @@ def get_remove_membership_service() -> RemoveMembershipService:
 RemoveMembershipServiceDependency = Annotated[
     RemoveMembershipService,
     Depends(get_remove_membership_service),
+]
+
+
+def get_transfer_tenant_ownership_service() -> TransferTenantOwnershipService:
+    """Build the tenant ownership-transfer service."""
+
+    return TransferTenantOwnershipService()
+
+
+TransferTenantOwnershipServiceDependency = Annotated[
+    TransferTenantOwnershipService,
+    Depends(get_transfer_tenant_ownership_service),
 ]
 
 

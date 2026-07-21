@@ -279,3 +279,25 @@ class EnabledMembershipResponse(BaseModel):
     user_id: UUID
     role: TenantRole
     updated_at: datetime
+
+
+class TransferTenantOwnershipRequest(BaseModel):
+    """Request to transfer tenant ownership to an existing user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_owner_user_id: UUID
+
+
+class TransferredTenantOwnershipResponse(BaseModel):
+    """Public result of an atomic tenant ownership transfer."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        from_attributes=True,
+    )
+
+    tenant_id: UUID
+    previous_owner_user_id: UUID
+    new_owner_user_id: UUID

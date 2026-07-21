@@ -19,6 +19,7 @@ from clinicops.api.v1.tenants.dependencies import (
     ListTenantMembershipsServiceDependency,
     RemoveMembershipServiceDependency,
     RevokeInvitationServiceDependency,
+    TransferTenantOwnershipServiceDependency,
     require_tenant_permission,
 )
 from clinicops.api.v1.tenants.schemas import (
@@ -39,6 +40,8 @@ from clinicops.api.v1.tenants.schemas import (
     TenantDetailResponse,
     TenantListResponse,
     TenantSummaryResponse,
+    TransferredTenantOwnershipResponse,
+    TransferTenantOwnershipRequest,
 )
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.services.require_permission import (
@@ -72,6 +75,9 @@ from clinicops.tenancy.services.queries import (
     TenantDetails,
     TenantMembership,
 )
+from clinicops.tenancy.services.transfer_ownership import (
+    TransferTenantOwnershipCommand,
+)
 
 router = APIRouter(
     prefix="/tenants",
@@ -99,6 +105,14 @@ MemberManageAuthorizationDependency = Annotated[
     Depends(
         require_tenant_permission(
             TenantPermission.MEMBER_MANAGE,
+        )
+    ),
+]
+OwnershipTransferAuthorizationDependency = Annotated[
+    AuthorizedTenantContext,
+    Depends(
+        require_tenant_permission(
+            TenantPermission.OWNERSHIP_TRANSFER,
         )
     ),
 ]
@@ -405,6 +419,33 @@ def remove_tenant_membership(
     session.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{tenant_id}/ownership/transfer",
+    response_model=TransferredTenantOwnershipResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Transfer tenant ownership",
+)
+def transfer_tenant_ownership(
+    payload: TransferTenantOwnershipRequest,
+    context: OwnershipTransferAuthorizationDependency,
+    session: DatabaseSessionDependency,
+    service: TransferTenantOwnershipServiceDependency,
+) -> TransferredTenantOwnershipResponse:
+    """Transfer ownership atomically and commit."""
+
+    result = service.execute(
+        session,
+        TransferTenantOwnershipCommand(
+            tenant_id=context.tenant_id,
+            expected_current_owner_user_id=context.user_id,
+            new_owner_user_id=payload.new_owner_user_id,
+        ),
+    )
+    session.commit()
+
+    return TransferredTenantOwnershipResponse.model_validate(result)
 
 
 @router.get(
