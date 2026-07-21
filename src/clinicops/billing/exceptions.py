@@ -1,3 +1,5 @@
+from enum import StrEnum
+
 from clinicops.billing.enums import SubscriptionStatus
 from clinicops.core.exceptions import ApplicationError
 
@@ -7,6 +9,29 @@ class BillingError(ApplicationError):
 
     code = "billing_error"
     public_message = "The billing operation could not be completed."
+
+
+class IdempotencyKeyViolation(StrEnum):
+    """Machine-readable idempotency-key validation failures."""
+
+    EMPTY = "empty"
+    TOO_LONG = "too_long"
+
+
+class InvalidIdempotencyKeyError(BillingError):
+    """Raised when a client idempotency key is invalid."""
+
+    code = "invalid_idempotency_key"
+    public_message = "The billing idempotency key is invalid."
+
+    violation: IdempotencyKeyViolation
+
+    def __init__(
+        self,
+        violation: IdempotencyKeyViolation,
+    ) -> None:
+        self.violation = violation
+        super().__init__(f"Invalid billing idempotency key: {violation.value}.")
 
 
 class UnsupportedPriceCodeError(BillingError):
