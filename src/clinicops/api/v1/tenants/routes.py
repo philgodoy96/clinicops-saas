@@ -1,26 +1,34 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from clinicops.api.dependencies import DatabaseSessionDependency
 from clinicops.api.v1.authentication.dependencies import (
     AuthenticatedPrincipalDependency,
 )
 from clinicops.api.v1.tenants.dependencies import (
+    ChangeMembershipRoleServiceDependency,
     CreateTenantServiceDependency,
+    DisableMembershipServiceDependency,
+    EnableMembershipServiceDependency,
     GetTenantDetailsServiceDependency,
     IssueInvitationServiceDependency,
     ListAvailableTenantsServiceDependency,
     ListTenantInvitationsServiceDependency,
     ListTenantMembershipsServiceDependency,
+    RemoveMembershipServiceDependency,
     RevokeInvitationServiceDependency,
     require_tenant_permission,
 )
 from clinicops.api.v1.tenants.schemas import (
+    ChangedMembershipRoleResponse,
+    ChangeMembershipRoleRequest,
     CreatedTenantResponse,
     CreateTenantRequest,
     CurrentMembershipResponse,
+    DisabledMembershipResponse,
+    EnabledMembershipResponse,
     InvitationListResponse,
     InvitationResponse,
     IssuedInvitationResponse,
@@ -50,6 +58,12 @@ from clinicops.tenancy.models import MembershipStatus
 from clinicops.tenancy.services.create_tenant import (
     CreateTenantCommand,
 )
+from clinicops.tenancy.services.membership_administration import (
+    ChangeMembershipRoleCommand,
+    DisableMembershipCommand,
+    EnableMembershipCommand,
+    RemoveMembershipCommand,
+)
 from clinicops.tenancy.services.queries import (
     AvailableTenant,
     GetTenantDetailsCommand,
@@ -77,6 +91,14 @@ MemberReadAuthorizationDependency = Annotated[
     Depends(
         require_tenant_permission(
             TenantPermission.MEMBER_READ,
+        )
+    ),
+]
+MemberManageAuthorizationDependency = Annotated[
+    AuthorizedTenantContext,
+    Depends(
+        require_tenant_permission(
+            TenantPermission.MEMBER_MANAGE,
         )
     ),
 ]
@@ -273,6 +295,116 @@ def list_tenant_memberships(
     )
 
     return MembershipListResponse(items=[_membership_response(result) for result in results])
+
+
+@router.patch(
+    "/{tenant_id}/memberships/{membership_id}/role",
+    response_model=ChangedMembershipRoleResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Change a tenant membership role",
+)
+def change_tenant_membership_role(
+    payload: ChangeMembershipRoleRequest,
+    membership_id: UUID,
+    context: MemberManageAuthorizationDependency,
+    session: DatabaseSessionDependency,
+    service: ChangeMembershipRoleServiceDependency,
+) -> ChangedMembershipRoleResponse:
+    """Change a non-owner membership role and commit."""
+
+    result = service.execute(
+        session,
+        ChangeMembershipRoleCommand(
+            tenant_id=context.tenant_id,
+            actor_user_id=context.user_id,
+            membership_id=membership_id,
+            role=payload.role,
+        ),
+    )
+    session.commit()
+
+    return ChangedMembershipRoleResponse.model_validate(result)
+
+
+@router.post(
+    "/{tenant_id}/memberships/{membership_id}/disable",
+    response_model=DisabledMembershipResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Disable a tenant membership",
+)
+def disable_tenant_membership(
+    membership_id: UUID,
+    context: MemberManageAuthorizationDependency,
+    session: DatabaseSessionDependency,
+    service: DisableMembershipServiceDependency,
+) -> DisabledMembershipResponse:
+    """Disable a non-owner membership and commit."""
+
+    result = service.execute(
+        session,
+        DisableMembershipCommand(
+            tenant_id=context.tenant_id,
+            actor_user_id=context.user_id,
+            membership_id=membership_id,
+        ),
+    )
+    session.commit()
+
+    return DisabledMembershipResponse.model_validate(result)
+
+
+@router.post(
+    "/{tenant_id}/memberships/{membership_id}/enable",
+    response_model=EnabledMembershipResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Enable a tenant membership",
+)
+def enable_tenant_membership(
+    membership_id: UUID,
+    context: MemberManageAuthorizationDependency,
+    session: DatabaseSessionDependency,
+    service: EnableMembershipServiceDependency,
+) -> EnabledMembershipResponse:
+    """Enable a disabled non-owner membership and commit."""
+
+    result = service.execute(
+        session,
+        EnableMembershipCommand(
+            tenant_id=context.tenant_id,
+            actor_user_id=context.user_id,
+            membership_id=membership_id,
+        ),
+    )
+    session.commit()
+
+    return EnabledMembershipResponse.model_validate(result)
+
+
+@router.delete(
+    "/{tenant_id}/memberships/{membership_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Remove a tenant membership",
+)
+def remove_tenant_membership(
+    membership_id: UUID,
+    context: MemberManageAuthorizationDependency,
+    session: DatabaseSessionDependency,
+    service: RemoveMembershipServiceDependency,
+) -> Response:
+    """Remove a non-owner membership and commit."""
+
+    service.execute(
+        session,
+        RemoveMembershipCommand(
+            tenant_id=context.tenant_id,
+            actor_user_id=context.user_id,
+            membership_id=membership_id,
+        ),
+    )
+    session.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
