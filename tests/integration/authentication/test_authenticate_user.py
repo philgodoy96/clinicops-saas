@@ -144,10 +144,18 @@ def create_password_user(
     return user
 
 
-def count_authentication_sessions(session: Session) -> int:
+def count_authentication_sessions(
+    session: Session,
+    *,
+    user_id: UUID | None = None,
+) -> int:
     """Return the number of authentication sessions."""
 
-    count = session.scalar(select(func.count()).select_from(AuthSession))
+    statement = select(func.count()).select_from(AuthSession)
+    if user_id is not None:
+        statement = statement.where(AuthSession.user_id == user_id)
+
+    count = session.scalar(statement)
     assert count is not None
     return count
 
@@ -209,6 +217,7 @@ def test_unknown_email_performs_dummy_password_verification(
 ) -> None:
     password_hasher = TrackingPasswordHasher(verify_result=False)
     service = build_service(password_hasher=password_hasher)
+    session_count_before = count_authentication_sessions(db_session)
 
     with pytest.raises(InvalidCredentialsError):
         service.execute(
@@ -220,13 +229,13 @@ def test_unknown_email_performs_dummy_password_verification(
         )
 
     assert password_hasher.verify_calls == [(PASSWORD, DUMMY_PASSWORD_HASH)]
-    assert count_authentication_sessions(db_session) == 0
+    assert count_authentication_sessions(db_session) == session_count_before
 
 
 def test_incorrect_password_uses_generic_authentication_failure(
     db_session: Session,
 ) -> None:
-    create_password_user(
+    user = create_password_user(
         db_session,
         email="wrong-password@example.com",
     )
@@ -242,7 +251,7 @@ def test_incorrect_password_uses_generic_authentication_failure(
 
     assert exception_info.value.code == "invalid_credentials"
     assert exception_info.value.public_message == ("The email or password is invalid.")
-    assert count_authentication_sessions(db_session) == 0
+    assert count_authentication_sessions(db_session, user_id=user.id) == 0
 
 
 def test_user_without_password_credential_cannot_authenticate(
@@ -261,7 +270,7 @@ def test_user_without_password_credential_cannot_authenticate(
             ),
         )
 
-    assert count_authentication_sessions(db_session) == 0
+    assert count_authentication_sessions(db_session, user_id=user.id) == 0
 
 
 def test_disabled_user_cannot_authenticate(
@@ -282,7 +291,7 @@ def test_disabled_user_cannot_authenticate(
             ),
         )
 
-    assert count_authentication_sessions(db_session) == 0
+    assert count_authentication_sessions(db_session, user_id=user.id) == 0
 
 
 def persist_committed_user() -> UUID:
