@@ -43,20 +43,27 @@ GET  /api/v1/auth/me
 POST /api/v1/auth/logout
 ```
 
-The implemented billing HTTP surface includes:
+The implemented billing HTTP surface distinguishes two API surfaces:
 
 ```text
-GET
-    /api/v1/tenants/{tenant_id}/billing/subscription
+Tenant-scoped billing API:
+    GET  /api/v1/tenants/{tenant_id}/billing/subscription
+    POST /api/v1/tenants/{tenant_id}/billing/subscription
+    POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+    POST /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
 
-POST
-    /api/v1/tenants/{tenant_id}/billing/subscription
+Provider-facing billing API:
+    POST /api/v1/billing/webhooks/{provider}
+```
 
-POST
-    /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+The tenant-scoped API uses Bearer authentication and permissions.
 
-POST
-    /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
+The provider-facing webhook API uses HMAC authentication.
+
+Supported webhook provider:
+
+```text
+fake
 ```
 
 ```text
@@ -665,6 +672,139 @@ The cancellation provider call occurs without an open database transaction.
 
 The route remains thin and does not own commit boundaries.
 
+## Billing webhook ingestion
+
+```http
+POST /api/v1/billing/webhooks/fake
+Content-Type: application/json
+X-Billing-Signature: t=<unix_timestamp>,v1=<hmac_sha256_digest>
+X-Correlation-ID: <optional-correlation-id>
+```
+
+The route does not require:
+
+```text
+Authorization: Bearer ...
+Idempotency-Key: ...
+```
+
+## Billing Webhook Ingestion Transport
+
+The route:
+
+- reads the exact request body bytes;
+- resolves the provider from the path;
+- authenticates the request with HMAC-SHA256;
+- validates signature freshness;
+- enforces the configured payload limit;
+- forwards the authenticated bytes to the ingestion service;
+- commits the event receipt;
+- returns `202 Accepted`.
+
+The route does not:
+
+- parse JSON before signature verification;
+- require a user identity;
+- resolve tenant context;
+- mutate subscription state;
+- process the event;
+- expose duplicate status.
+
+### Webhook signature contract
+
+```text
+Header:
+    X-Billing-Signature
+
+Value:
+    t=<unix_timestamp>,v1=<64-character lowercase hexadecimal digest>
+
+Signed message:
+    <timestamp>.<exact raw request bytes>
+
+Algorithm:
+    HMAC-SHA256
+```
+
+The timestamp and body are both authenticated.
+
+The default accepted clock difference is:
+
+```text
+300 seconds
+```
+
+### Successful webhook response
+
+```text
+202 Accepted
+application/json
+```
+
+```json
+{
+  "received": true
+}
+```
+
+This response means:
+
+```text
+the authenticated event has been committed durably
+```
+
+It does not mean:
+
+```text
+the event has been processed
+the subscription has been changed
+the provider state has been applied
+```
+
+Both new and identical duplicate events receive the same response.
+
+### Webhook request ordering
+
+```text
+payload-size check
+    -> provider signature authentication
+    -> canonical JSON validation
+    -> durable event reservation or replay
+    -> commit
+    -> 202
+```
+
+Examples:
+
+```text
+malformed JSON + invalid signature
+    -> 401
+    -> signature rejection happens first
+
+malformed JSON + valid signature
+    -> 400
+    -> canonical payload validation fails
+```
+
+### Webhook duplicate behavior
+
+```text
+same provider + same event ID + same raw bytes
+    -> 202
+    -> one persisted event
+
+same provider + same event ID + different raw bytes
+    -> 409
+```
+
+The response does not include:
+
+- `duplicate`;
+- local webhook event ID;
+- processing status;
+- payload hash;
+- signature timestamp.
+
 ## Transaction ownership
 
 Application services flush database changes but do not commit.
@@ -876,6 +1016,39 @@ Scheduled cancellation failures map to:
     ambiguous provider outcome
 ```
 
+Billing webhook ingestion failures map to:
+
+```text
+400
+    invalid canonical webhook payload
+    malformed authenticated JSON
+    unsupported canonical event type
+
+401
+    missing webhook signature
+    malformed webhook signature
+    invalid webhook signature
+    stale or future signature timestamp
+
+404
+    unsupported billing webhook provider
+
+409
+    provider event ID reused with different raw bytes
+
+413
+    payload exceeds configured limit
+
+503
+    temporary database or infrastructure failure
+```
+
+Webhook HMAC failures must not include:
+
+```text
+WWW-Authenticate: Bearer
+```
+
 ## Request and correlation identifiers
 
 Every HTTP request receives:
@@ -931,15 +1104,20 @@ implemented:
 - immediate plan change;
 - pending-plan replacement;
 - pending-plan cancellation;
-- automatic renewal application;
+- subscription renewal application;
 - immediate cancellation;
 - undo cancellation;
 - reactivation;
 - final cancellation application;
 - automatic entitlement revocation;
-- webhook processing;
-- background execution;
-- provider reconciliation;
+- webhook event processing;
+- event ordering;
+- stale event rejection;
+- background jobs;
+- automatic retries;
+- reconciliation;
+- dead-letter queues;
+- provider-specific production adapters;
 - refunds;
 - proration.
 
