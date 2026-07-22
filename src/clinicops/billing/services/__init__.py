@@ -5,9 +5,17 @@ from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionService,
     CreatedBillingSubscription,
 )
+from clinicops.billing.services.get_subscription import (
+    BillingSubscriptionDetails,
+    GetBillingSubscriptionQuery,
+    GetBillingSubscriptionService,
+)
 
 __all__ = [
+    "BillingSubscriptionDetails",
     "CreateBillingSubscriptionCommand",
     "CreateBillingSubscriptionService",
     "CreatedBillingSubscription",
+    "GetBillingSubscriptionQuery",
+    "GetBillingSubscriptionService",
 ]
