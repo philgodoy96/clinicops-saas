@@ -56,13 +56,25 @@ The implemented billing foundation now establishes:
 - persisted `pending_price_code`;
 - successful idempotent replay;
 - retryable, terminal, and ambiguous provider outcomes;
+- PostgreSQL integration and concurrency coverage;
+- tenant-scoped scheduled subscription cancellation;
+- `BILLING_MANAGE` authorization;
+- required client `Idempotency-Key` handling;
+- durable `CANCEL_SUBSCRIPTION` provider operations;
+- provider calls outside database transactions;
+- period-end effective dates derived from persisted subscription state;
+- persisted `cancel_at_period_end`;
+- persisted `cancellation_requested_at`;
+- pending plan-change cleanup;
+- successful idempotent replay;
+- retryable, terminal, and ambiguous provider outcomes;
 - PostgreSQL integration and concurrency coverage.
 
 This document distinguishes the implemented domain, persistence,
-fake-provider, subscription-creation, subscription-read, and scheduled
-plan-change workflow foundations from the webhook ingestion, entitlement,
-worker, cancellation, and real-provider capabilities planned for later
-milestones.
+fake-provider, subscription-creation, subscription-read, scheduled
+plan-change, and scheduled cancellation workflow foundations from the
+webhook ingestion, entitlement, worker, and real-provider capabilities
+planned for later milestones.
 
 ## Module Ownership
 
@@ -108,11 +120,13 @@ The billing module currently owns:
   orchestration;
 - tenant-scoped scheduled plan-change application orchestration;
 - FastAPI billing plan-change routes;
-- durable `CHANGE_PLAN` reservation and claim orchestration.
+- durable `CHANGE_PLAN` reservation and claim orchestration;
+- tenant-scoped scheduled cancellation application orchestration;
+- FastAPI billing cancellation routes;
+- durable `CANCEL_SUBSCRIPTION` reservation and claim orchestration.
 
 The current billing implementation does not own:
 
-- subscription-cancellation application services and API;
 - real payment-provider integrations;
 - stale in-progress recovery;
 - provider retry scheduling;
@@ -1750,6 +1764,357 @@ effect boundaries.
 
 It does not claim exactly-once execution.
 
+## Implemented Scheduled Subscription Cancellation
+
+ClinicOps exposes one tenant-scoped cancellation mutation:
+
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
+```
+
+The request has no body.
+
+It must include:
+
+```text
+Idempotency-Key: <opaque client-generated key>
+```
+
+The mutation requires:
+
+```text
+TenantPermission.BILLING_MANAGE
+```
+
+The current authorization policy grants billing management to tenant owners.
+
+Administrators retain billing read access but cannot mutate billing lifecycle
+state.
+
+Staff members do not receive billing administration permissions.
+
+## Scheduled Cancellation Semantics
+
+A cancellation is scheduled for the current subscription period boundary.
+
+The active subscription remains usable until:
+
+```text
+current_period_end
+```
+
+After provider confirmation, ClinicOps persists:
+
+```text
+cancel_at_period_end = true
+cancellation_requested_at = current application time
+pending_price_code = null
+```
+
+The workflow preserves:
+
+```text
+status = active
+canceled_at = null
+price_code
+plan
+billing_interval
+currency
+unit_amount
+current_period_start
+current_period_end
+```
+
+Example:
+
+```text
+Before:
+    status = active
+    cancel_at_period_end = false
+    cancellation_requested_at = null
+    canceled_at = null
+
+After scheduling:
+    status = active
+    cancel_at_period_end = true
+    cancellation_requested_at = application timestamp
+    canceled_at = null
+```
+
+The subscription is not promoted to `canceled` during this workflow.
+
+Final cancellation is intentionally deferred to future webhook or
+reconciliation processing after provider confirmation that the paid period
+has ended.
+
+## Cancellation Precedence Over Pending Plan Changes
+
+Cancellation takes precedence over a pending plan change.
+
+When a subscription has:
+
+```text
+pending_price_code = professional_monthly
+```
+
+and cancellation is successfully scheduled, ClinicOps persists:
+
+```text
+pending_price_code = null
+cancel_at_period_end = true
+```
+
+The active `price_code` remains unchanged.
+
+The fake provider clears its corresponding pending plan-change state as part
+of the cancellation transition.
+
+This prevents contradictory period-boundary instructions such as:
+
+```text
+change plan at period end
+and
+cancel subscription at period end
+```
+
+A pending plan change does not block cancellation.
+
+Cancellation removes that pending target only after the provider confirms the
+scheduled cancellation.
+
+## Cancellation Eligibility
+
+A cancellation may be scheduled only when:
+
+- a persisted subscription exists for the tenant;
+- the subscription status is `active`;
+- `canceled_at` is null;
+- `cancel_at_period_end` is false;
+- `provider_subscription_id` exists;
+- `current_period_end` exists.
+
+Lifecycle conflicts are explicit:
+
+```text
+subscription is not active
+    -> 409 Conflict
+
+subscription is already canceled
+    -> 409 Conflict
+
+cancellation is already pending
+    -> 409 Conflict
+```
+
+A pending plan change does not produce a conflict because cancellation takes
+precedence.
+
+## Durable Cancellation Operation
+
+Every provider-side cancellation is represented by:
+
+```text
+ProviderOperationType.CANCEL_SUBSCRIPTION
+```
+
+The uniqueness boundary remains:
+
+```text
+tenant_id + operation_type + idempotency_key
+```
+
+The provider-side operation key is derived from the persisted operation UUID:
+
+```text
+clinicops:<provider_operation_uuid>
+```
+
+The application command fingerprint includes:
+
+```text
+provider_subscription_id
+effective_at
+```
+
+The effective date is derived from:
+
+```text
+Subscription.current_period_end
+```
+
+The client cannot select or override the effective date.
+
+Client-idempotency behavior:
+
+```text
+same tenant + same client key + same effective boundary
+    -> resume or replay
+
+same tenant + same client key + changed effective boundary
+    -> 409 Conflict
+
+new client key + existing pending cancellation
+    -> 409 Conflict
+```
+
+A successful replay is reconstructed from the persisted `Subscription` row.
+
+The public HTTP response does not expose:
+
+- provider operation IDs;
+- provider operation keys;
+- provider references;
+- provider subscription IDs;
+- request fingerprints;
+- provider result payloads;
+- the internal `replayed` flag.
+
+## Cancellation Transaction Boundaries
+
+The cancellation orchestrator intentionally owns multiple commits.
+
+The workflow is:
+
+```text
+Transaction A
+    -> lock Subscription
+    -> validate lifecycle state
+    -> load or reserve CANCEL_SUBSCRIPTION
+    -> validate client fingerprint
+    -> claim operation as in_progress
+    -> commit
+
+Provider call
+    -> no database transaction open
+
+Transaction B
+    -> reload and lock ProviderOperation
+    -> reload and lock Subscription
+    -> revalidate local state
+    -> validate provider result
+    -> set cancel_at_period_end
+    -> set cancellation_requested_at
+    -> clear pending_price_code
+    -> persist provider_state_version
+    -> mark operation succeeded
+    -> commit
+```
+
+The provider result must confirm:
+
+- the same provider subscription;
+- the persisted current period boundary as the effective cancellation date;
+- a provider state version greater than the current local version.
+
+The provider result field named `canceled_at` represents the provider-confirmed
+future effective cancellation date for this command boundary.
+
+ClinicOps does not copy that field into the local `Subscription.canceled_at`
+column during scheduling.
+
+## Fake Provider Cancellation Behavior
+
+The fake provider stores:
+
+```text
+pending_cancellation_at
+```
+
+It preserves the subscription as not yet finally canceled.
+
+A successful cancellation request:
+
+- validates the current period boundary;
+- stores the pending cancellation date;
+- clears pending plan-change state;
+- increments `provider_state_version`;
+- stores the result for same-key replay.
+
+A new cancellation operation key is rejected while cancellation is pending.
+
+A new plan-change request is rejected after cancellation is pending.
+
+The fake provider supports:
+
+- successful cancellation scheduling;
+- retryable pre-mutation failure;
+- terminal rejection;
+- ambiguous success;
+- same-key success replay;
+- same-key terminal failure replay.
+
+An ambiguous success mutates provider state once, reports an ambiguous outcome,
+and then replays the stored result when the same provider operation key is
+retried.
+
+## Cancellation Failure Persistence
+
+Retryable and ambiguous provider outcomes are persisted as:
+
+```text
+failed_retryable
+```
+
+The API returns:
+
+```text
+503 Service Unavailable
+```
+
+A later request with the same client key may reclaim the operation and retry
+with the same provider operation key.
+
+Terminal provider outcomes are persisted as:
+
+```text
+failed_terminal
+```
+
+The API returns:
+
+```text
+409 Conflict
+```
+
+The same client key does not call the provider again after a terminal outcome.
+
+Business conflicts discovered before the provider call do not create an
+external side effect.
+
+Business conflicts discovered after provider success are persisted as a
+terminal local operation failure.
+
+## Cancellation Concurrency Guarantees
+
+The implementation combines:
+
+- PostgreSQL row-level locks;
+- provider-operation uniqueness;
+- client command fingerprints;
+- committed `in_progress` ownership;
+- provider-side idempotency;
+- monotonic provider-state versions;
+- one local pending cancellation flag.
+
+Concurrent requests with the same client key produce one logical
+cancellation.
+
+The competing request may:
+
+- replay the completed result; or
+- receive an operation-in-progress conflict.
+
+Concurrent requests with different keys cannot establish two independent
+pending cancellations.
+
+One request succeeds and the competitor is rejected by local lifecycle
+validation or provider state validation.
+
+The implementation provides at-least-once provider attempts with idempotent
+effect boundaries.
+
+It does not claim exactly-once execution.
+
 ## Durable Workflow Decomposition
 
 A single client subscription request may create two durable outbound
@@ -2010,13 +2375,11 @@ Implemented tenant billing routes currently provide:
 create subscription
 read subscription
 schedule price change
-```
-
-Future tenant billing routes are expected to provide:
-
-```text
 schedule period-end cancellation
 ```
+
+Future tenant billing routes are expected to provide additional lifecycle
+mutations as later milestones land.
 
 Mutation routes require an `Idempotency-Key`.
 
@@ -2036,7 +2399,8 @@ STAFF
     -> no billing administration permission
 ```
 
-Cancellation API surfaces remain deferred.
+Immediate cancellation, undo cancellation, and reactivation API surfaces
+remain deferred.
 
 ## Planned Background Processing Boundary
 
@@ -2166,6 +2530,27 @@ Coverage includes:
 - independent database sessions per concurrent thread;
 - concurrent same-key requests;
 - concurrent different-key requests;
+- scoped cleanup by test-owned tenant IDs;
+- persisted `cancel_at_period_end`;
+- persisted `cancellation_requested_at`;
+- preserved `status = active`;
+- preserved `canceled_at = null`;
+- active price and current period preservation;
+- pending plan-change cleanup;
+- durable `CANCEL_SUBSCRIPTION` success;
+- successful same-key replay;
+- changed-period fingerprint conflict;
+- new-key pending-cancellation conflict;
+- inactive subscription rejection;
+- already-canceled subscription rejection;
+- ambiguous provider recovery;
+- terminal provider failure replay;
+- PostgreSQL-backed workflow integration;
+- HTTP integration;
+- tenant-scoped mutation;
+- independent database sessions per concurrent thread;
+- concurrent same-key requests;
+- concurrent different-key requests;
 - scoped cleanup by test-owned tenant IDs.
 
 Migration parity is checked through:
@@ -2175,9 +2560,8 @@ alembic upgrade head
 alembic check
 ```
 
-Real-provider execution, webhook ingestion, cancellation, and
-background-worker tests are added only when those implementation boundaries
-exist.
+Real-provider execution, webhook ingestion, and background-worker tests are
+added only when those implementation boundaries exist.
 
 ## Invariants
 
@@ -2354,6 +2738,49 @@ The domain foundation establishes these invariants:
 
 70. The workflow provides at-least-once attempts, not exactly-once execution.
 
+71. Scheduled cancellation requires `BILLING_MANAGE`.
+
+72. Every cancellation request requires a validated client
+    `Idempotency-Key`.
+
+73. Every provider-side cancellation is represented by a durable
+    `CANCEL_SUBSCRIPTION` operation.
+
+74. The cancellation effective date is derived from the persisted
+    `current_period_end`.
+
+75. The client cannot supply provider identities or an effective date.
+
+76. Scheduling cancellation preserves `status = active`.
+
+77. Scheduling cancellation preserves `canceled_at = null`.
+
+78. Successful cancellation sets `cancel_at_period_end = true`.
+
+79. Successful cancellation sets `cancellation_requested_at` from the
+    application clock.
+
+80. Successful cancellation clears `pending_price_code`.
+
+81. A pending plan change does not block cancellation.
+
+82. An inactive or already-canceled subscription cannot be scheduled for
+    cancellation.
+
+83. A new idempotency key cannot replace an existing pending cancellation.
+
+84. Provider calls occur only after the durable operation claim commits.
+
+85. The provider result must confirm the persisted period boundary.
+
+86. The provider result must advance `provider_state_version`.
+
+87. A successful replay does not call the provider again.
+
+88. A client key reused after the effective boundary changes is rejected.
+
+89. The workflow provides at-least-once attempts, not exactly-once execution.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
@@ -2367,15 +2794,16 @@ The following capabilities are intentionally deferred:
 - refunds;
 - invoice generation;
 - pending-plan replacement;
-- pending-plan cancellation;
+- pending-plan cancellation as a separate workflow;
 - automatic renewal application;
-- subscription cancellation;
+- final cancellation application at period end;
+- undo cancellation;
 - webhook ingestion;
 - webhook processing;
 - provider reconciliation;
 - background retries;
 - stale `in_progress` recovery;
-- entitlement changes;
+- entitlement revocation;
 - real payment-provider adapters;
 - background jobs;
 - live provider lookup during billing reads;
@@ -2396,11 +2824,11 @@ The following capabilities are intentionally deferred:
 - semiannual billing;
 - multiple subscriptions per tenant;
 - multiple currencies;
-- subscription reactivation;
+- reactivation;
 - production notification delivery.
 
 These capabilities are not required to establish the current domain,
-persistence, fake-provider, subscription-creation, subscription-read, and
-scheduled plan-change workflow foundations. They will be added only when
-their data ownership, transaction, security, failure, and testing boundaries
-are implemented explicitly.
+persistence, fake-provider, subscription-creation, subscription-read,
+scheduled plan-change, and scheduled cancellation workflow foundations. They
+will be added only when their data ownership, transaction, security, failure,
+and testing boundaries are implemented explicitly.
