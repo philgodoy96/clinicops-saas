@@ -80,13 +80,26 @@ The implemented billing foundation now establishes:
 - conflicting duplicate detection;
 - PostgreSQL concurrency protection;
 - unknown local subscription acceptance;
-- HTTP integration coverage.
+- HTTP integration coverage;
+- durable billing webhook processing claims;
+- independent claim and application transactions;
+- provider subscription lookup and row locking;
+- provider state-version ordering;
+- renewal event application;
+- pending plan activation on renewal;
+- final cancellation application;
+- provider-authoritative cancellation;
+- stale and already-reflected event handling;
+- retryable and terminal failure persistence;
+- completed event replay;
+- PostgreSQL-backed processing concurrency coverage;
+- atomic subscription and event completion.
 
 This document distinguishes the implemented domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
-plan-change, scheduled cancellation, and webhook-ingestion workflow
-foundations from the webhook processing, entitlement, worker, and
-real-provider capabilities planned for later milestones.
+plan-change, scheduled cancellation, webhook-ingestion, and webhook-
+processing workflow foundations from entitlement, worker, and real-provider
+capabilities planned for later milestones.
 
 ## Module Ownership
 
@@ -139,7 +152,10 @@ The billing module currently owns:
 - authenticated billing webhook HTTP ingestion;
 - canonical provider webhook event validation;
 - HMAC-SHA256 webhook signature verification;
-- durable webhook-event receipt and deduplication.
+- durable webhook-event receipt and deduplication;
+- billing webhook event processing;
+- renewal and cancellation event application;
+- provider state-version ordering during processing.
 
 The current billing implementation does not own:
 
@@ -147,7 +163,7 @@ The current billing implementation does not own:
 - stale in-progress recovery;
 - provider retry scheduling;
 - background provider execution;
-- webhook business processing;
+- background webhook processing workers;
 - entitlement enforcement;
 - background-job execution;
 - audit-log persistence.
@@ -476,9 +492,9 @@ incoming_version > current_version
 
 Negative provider state versions are invalid.
 
-The current foundation only defines the comparison rule. A later webhook
-processor will use persisted provider state versions to protect subscriptions
-from duplicate and out-of-order events.
+The current foundation defines the comparison rule. The webhook processor uses
+persisted provider state versions to protect subscriptions from duplicate and
+out-of-order events.
 
 Example:
 
@@ -619,12 +635,12 @@ Subscription creation coordinates database reservation, provider calls, and
 durable response replay. Stale in-progress recovery, scheduled retries, and
 background provider execution remain deferred.
 
-## Future Webhook Idempotency Boundary
+## Webhook Idempotency Boundary
 
 Outbound command idempotency and inbound webhook idempotency are separate
 reliability concerns.
 
-Future webhook processing will use:
+Webhook processing uses:
 
 ```text
 provider + provider_event_id
@@ -632,10 +648,10 @@ provider + provider_event_id
 
 as the event-delivery deduplication boundary.
 
-Provider state versions will separately protect the subscription transition
+Provider state versions separately protect the subscription transition
 from stale and out-of-order events.
 
-The planned flow is:
+The implemented flow is:
 
 ```text
 Verify raw-body signature
@@ -645,8 +661,8 @@ Verify raw-body signature
     -> apply or ignore subscription transition
 ```
 
-Webhook event processing, subscription mutation from events, and background
-processing services remain intentionally deferred.
+Background worker execution, scheduled retries, and stale `processing`
+recovery remain intentionally deferred.
 
 ## Implemented Billing Webhook Ingestion
 
@@ -996,6 +1012,500 @@ It does not:
 This keeps the provider request lifecycle short and ensures the event is
 durable before domain processing begins.
 
+## Implemented Billing Webhook Processing
+
+Webhook processing is an internal application boundary.
+
+It does not expose a public HTTP endpoint.
+
+One persisted event is processed by:
+
+```text
+ProcessBillingWebhookEventCommand
+    webhook_event_id
+```
+
+The application service is:
+
+```text
+ProcessBillingWebhookEventService
+```
+
+Supported event types:
+
+```text
+subscription.renewed
+subscription.canceled
+```
+
+The service works only with webhook events that have already passed:
+
+- provider authentication;
+- payload-size enforcement;
+- canonical payload validation;
+- durable ingestion;
+- provider event deduplication.
+
+Authentication and processing remain separate responsibilities.
+
+## Processing Transaction Model
+
+Processing uses two durable transactions.
+
+```text
+Transaction A
+    -> lock BillingWebhookEvent
+    -> validate claim eligibility
+    -> set status = processing
+    -> increment processing_attempt_count
+    -> clear previous retryable failure fields
+    -> commit
+
+Transaction B
+    -> reload and lock BillingWebhookEvent
+    -> resolve and lock Subscription
+    -> revalidate provider state ordering
+    -> apply or ignore the event
+    -> complete the event state
+    -> commit
+```
+
+There are no provider API calls between these transactions.
+
+The claim is committed independently so another worker can observe that the
+event is already owned.
+
+Subscription mutation and final event completion occur in the same
+Transaction B.
+
+This prevents partially committed outcomes such as:
+
+```text
+subscription changed
+event still received
+```
+
+or:
+
+```text
+event marked processed
+subscription mutation rolled back
+```
+
+If Transaction B fails before commit:
+
+```text
+the subscription mutation rolls back
+the event completion rolls back
+the durable processing claim remains
+```
+
+Recovery of stale `processing` claims is intentionally deferred to the
+background-jobs milestone.
+
+## Processing Claim Lifecycle
+
+Events eligible for a new claim:
+
+```text
+received
+failed_retryable
+```
+
+Claim transition:
+
+```text
+status = processing
+processing_attempt_count += 1
+processed_at = null
+failure_code = null
+failure_message = null
+```
+
+Other states:
+
+```text
+processing
+    -> competing claim conflict
+
+processed
+    -> completed result replay
+    -> no attempt increment
+
+ignored
+    -> completed result replay
+    -> no attempt increment
+
+failed_terminal
+    -> persisted terminal failure replay
+    -> no reprocessing
+```
+
+A completed replay does not mutate the subscription or event.
+
+## Subscription Resolution
+
+Processing resolves the local subscription with:
+
+```text
+provider
++
+provider_subscription_id
+```
+
+The selected subscription row is locked with:
+
+```text
+SELECT ... FOR UPDATE
+```
+
+The provider event cannot select a local record using:
+
+- tenant ID;
+- local subscription ID;
+- billing customer ID.
+
+If the provider subscription identity is unknown locally:
+
+```text
+event.status = failed_retryable
+event.processed_at = null
+event.failure_code =
+    billing_webhook_subscription_not_found
+```
+
+This is retryable because ingestion may complete before local billing state is
+available.
+
+## Provider State Ordering
+
+The primary ordering boundary is:
+
+```text
+provider_state_version
+```
+
+Rules:
+
+```text
+event version < local version
+    -> ignored as stale
+
+event version == local version
+    -> ignored as already reflected
+
+event version > local version
+    -> eligible for application
+```
+
+After a successfully applied event:
+
+```text
+Subscription.provider_state_version
+    = event.provider_state_version
+
+Subscription.last_provider_event_at
+    = event.provider_created_at
+```
+
+`provider_created_at` records provider event chronology but is not the primary
+ordering authority.
+
+Every worker rechecks the local version after locking the subscription.
+
+No event may reduce the local provider state version.
+
+## Renewal Event Processing
+
+A valid `subscription.renewed` event represents a new active billing period.
+
+Application requirements include:
+
+- the event version advances local provider state;
+- the local subscription is not finally canceled;
+- no cancellation is pending;
+- the local status is eligible for renewal;
+- the local billing period is complete;
+- the new period starts exactly at the current local period end;
+- the event price code matches the expected local price;
+- the price code exists in the ClinicOps billing catalog.
+
+The period transition is:
+
+```text
+event.current_period_start
+    == local.current_period_end
+
+event.current_period_end
+    > event.current_period_start
+```
+
+Applied mutation:
+
+```text
+status = active
+price_code = event.price_code
+plan = local catalog plan
+billing_interval = local catalog interval
+currency = local catalog currency
+unit_amount = local catalog amount
+pending_price_code = null
+current_period_start = event.current_period_start
+current_period_end = event.current_period_end
+provider_state_version = event.provider_state_version
+last_provider_event_at = event.provider_created_at
+```
+
+The provider supplies the price code.
+
+ClinicOps remains authoritative for:
+
+- plan;
+- billing interval;
+- currency;
+- unit amount.
+
+## Pending Plan Activation
+
+When a local plan change is scheduled:
+
+```text
+pending_price_code != null
+```
+
+the renewal event must contain:
+
+```text
+event.price_code == pending_price_code
+```
+
+After application:
+
+```text
+price_code = pending_price_code
+pending_price_code = null
+```
+
+A mismatch is persisted as a terminal processing failure.
+
+A renewal event cannot implicitly:
+
+- select an unrelated price;
+- reverse a scheduled cancellation;
+- reactivate a finally canceled subscription.
+
+## Cancellation Event Processing
+
+A valid `subscription.canceled` event represents provider-confirmed final
+cancellation.
+
+Applied mutation:
+
+```text
+status = canceled
+canceled_at = event.canceled_at
+cancel_at_period_end = false
+pending_price_code = null
+current_period_start = event.current_period_start
+current_period_end = event.current_period_end
+provider_state_version = event.provider_state_version
+last_provider_event_at = event.provider_created_at
+```
+
+The processing workflow preserves:
+
+```text
+cancellation_requested_at
+```
+
+This keeps separate records of:
+
+```text
+cancellation_requested_at
+    -> when ClinicOps requested cancellation
+
+canceled_at
+    -> when the provider confirmed final cancellation
+```
+
+## Scheduled and Provider-Authoritative Cancellation
+
+When cancellation was locally scheduled:
+
+```text
+cancel_at_period_end = true
+```
+
+the provider event must confirm the scheduled boundary:
+
+```text
+event.current_period_end
+    == local.current_period_end
+
+event.canceled_at
+    == local.current_period_end
+```
+
+A mismatch is a terminal conflict.
+
+A provider-authoritative cancellation may also be applied when:
+
+```text
+cancel_at_period_end = false
+cancellation_requested_at = null
+```
+
+This represents valid provider-side or administrative cancellation outside a
+ClinicOps API request.
+
+The cancellation timestamp must remain inside the provider event billing
+period.
+
+The event must not regress the current local billing period.
+
+## Processing Outcomes
+
+Successful application outcomes:
+
+```text
+applied
+ignored
+```
+
+Applied event persistence:
+
+```text
+event.status = processed
+event.processed_at = Clock.now()
+event.failure_code = null
+event.failure_message = null
+```
+
+Ignored event persistence:
+
+```text
+event.status = ignored
+event.processed_at = Clock.now()
+event.failure_code = null
+event.failure_message = null
+```
+
+`ignored` is not an error.
+
+It means the event is valid but its state version is stale or already
+reflected locally.
+
+## Processing Failure Classification
+
+Retryable failure:
+
+```text
+event.status = failed_retryable
+event.processed_at = null
+event.failure_code != null
+```
+
+Implemented retryable case:
+
+```text
+billing_webhook_subscription_not_found
+```
+
+Terminal failure:
+
+```text
+event.status = failed_terminal
+event.processed_at = Clock.now()
+event.failure_code != null
+```
+
+Implemented terminal categories include:
+
+- invalid persisted payload;
+- persisted metadata mismatch;
+- provider subscription mismatch;
+- unsupported event type;
+- unsupported price code;
+- pending price mismatch;
+- unexpected price change;
+- invalid period transition;
+- pending cancellation conflict;
+- renewal of a canceled subscription;
+- invalid cancellation timestamp;
+- cancellation period regression;
+- scheduled cancellation boundary mismatch;
+- inconsistent final cancellation.
+
+Failure codes are stable machine-readable classifications.
+
+Failure messages are controlled internal diagnostics and are length-limited.
+
+## Processing Concurrency
+
+### Same Event
+
+Concurrent workers lock the same webhook event row.
+
+One worker may claim and process the event while another observes:
+
+```text
+processing
+```
+
+and receives a processing conflict.
+
+A later worker may observe:
+
+```text
+processed
+ignored
+```
+
+and replay the completed result.
+
+In every safe outcome:
+
+```text
+processing_attempt_count increments once
+subscription transition applies once
+the final event state is stable
+```
+
+### Different Events for the Same Subscription
+
+Different events may be claimed independently.
+
+Their application transactions lock the same subscription row.
+
+Example:
+
+```text
+renewal version 5
+cancellation version 6
+```
+
+Possible order:
+
+```text
+renewal applies
+then cancellation applies
+```
+
+or:
+
+```text
+cancellation applies first
+renewal becomes stale and is ignored
+```
+
+Required final state:
+
+```text
+the greatest valid provider state version wins
+the subscription never regresses
+each event reaches processed or ignored
+```
+
 ## Time Handling
 
 All lifecycle timestamps must be timezone-aware.
@@ -1277,6 +1787,7 @@ The event schema supports:
 
 ```text
 received
+processing
 processed
 ignored
 failed_retryable
@@ -1289,9 +1800,9 @@ must necessarily carry an object-state version.
 The JSONB payload stores the verified provider event body after signature
 verification. Signature headers and secrets are never persisted.
 
-Webhook ingestion, HMAC verification, event deduplication, and durable receipt
-are implemented. Event normalization beyond canonical validation and business
-processing remain intentionally deferred.
+Webhook ingestion, HMAC verification, event deduplication, durable receipt,
+and event processing are implemented. Background worker execution and
+scheduled retry orchestration remain intentionally deferred.
 
 ## Repository Boundary
 
@@ -1340,7 +1851,7 @@ Tenant
     -> ProviderOperation
 ```
 
-Webhook processing will use a separate entry order:
+Webhook processing uses a separate entry order:
 
 ```text
 BillingWebhookEvent
@@ -1911,8 +2422,7 @@ After scheduling:
 
 The target price is not promoted to the active price during this workflow.
 
-Application of the pending target at renewal is intentionally deferred to
-future webhook or reconciliation processing.
+Application of the pending target at renewal is handled by webhook processing.
 
 ## Plan-Change Eligibility
 
@@ -2210,9 +2720,8 @@ After scheduling:
 
 The subscription is not promoted to `canceled` during this workflow.
 
-Final cancellation is intentionally deferred to future webhook or
-reconciliation processing after provider confirmation that the paid period
-has ended.
+Final cancellation is handled by webhook processing after provider
+confirmation that the paid period has ended.
 
 ## Cancellation Precedence Over Pending Plan Changes
 
@@ -2942,7 +3451,37 @@ Coverage includes:
 - signature rejection before JSON parsing;
 - valid signature with malformed JSON;
 - no persistence after failed authentication or schema validation;
-- scoped cleanup by provider event ID.
+- scoped cleanup by provider event ID;
+- received event claim;
+- retryable event reclaim;
+- processing attempt increment;
+- previous retryable failure cleanup;
+- completed event replay;
+- processing conflict;
+- terminal failure replay;
+- pending plan activation;
+- local catalog price resolution;
+- regular renewal;
+- stale and equal-version renewal ignore;
+- invalid renewal period;
+- pending price mismatch;
+- renewal while cancellation is pending;
+- renewal after final cancellation;
+- scheduled cancellation finalization;
+- provider-authoritative cancellation;
+- cancellation request timestamp preservation;
+- invalid cancellation timestamp;
+- cancellation period regression;
+- cancellation boundary mismatch;
+- unknown local subscription retryable failure;
+- terminal failure persistence;
+- PostgreSQL renewal processing;
+- PostgreSQL cancellation processing;
+- Transaction B rollback simulation;
+- same-event concurrency;
+- same-subscription concurrency;
+- independent SQLAlchemy sessions per worker;
+- final provider state monotonicity.
 
 Migration parity is checked through:
 
@@ -3210,35 +3749,101 @@ The domain foundation establishes these invariants:
 
 108. Webhook processing remains a separate lifecycle boundary.
 
+109. Processing operates only on durably ingested webhook events.
+
+110. Webhook processing is not exposed as a public HTTP endpoint.
+
+111. A processing claim locks the webhook event row.
+
+112. Only `received` and `failed_retryable` events are eligible for a new
+claim.
+
+113. A successful claim increments `processing_attempt_count` exactly once.
+
+114. A completed event replay does not increment its attempt count.
+
+115. A terminally failed event is not automatically reprocessed.
+
+116. Claim persistence and event application use separate transactions.
+
+117. Subscription mutation and event completion commit atomically.
+
+118. Subscription resolution uses provider and provider subscription ID.
+
+119. Provider events cannot select local records by tenant or local
+subscription ID.
+
+120. A missing local subscription is a retryable processing failure.
+
+121. Provider state version is the primary event-ordering boundary.
+
+122. A stale or already-reflected event is ignored.
+
+123. An ignored event does not mutate subscription state.
+
+124. A provider event cannot reduce local provider state version.
+
+125. Subscription rows are locked before lifecycle mutation.
+
+126. Renewal periods must continue from the current local period boundary.
+
+127. Commercial price attributes are resolved from the local catalog.
+
+128. Renewal cannot implicitly reverse a scheduled cancellation.
+
+129. Renewal cannot reactivate a finally canceled subscription.
+
+130. Final cancellation preserves `cancellation_requested_at`.
+
+131. Scheduled cancellation must match the local period-end boundary.
+
+132. Provider-authoritative cancellation does not require a local request.
+
+133. Cancellation timestamps must belong to the provider event period.
+
+134. Processing failures persist stable failure codes.
+
+135. Retryable failures do not set `processed_at`.
+
+136. Terminal failures set `processed_at`.
+
+137. Concurrent processing cannot apply the same transition twice.
+
+138. Concurrent events for one subscription are serialized by row locking.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
+- background worker loop;
+- automatic event discovery;
+- scheduled retry execution;
+- exponential backoff;
+- jitter;
+- retry availability timestamps;
+- stale `processing` recovery;
+- maximum processing attempts;
+- dead-letter handling;
+- manual replay tooling;
+- provider reconciliation;
+- provider API state fetches;
+- entitlement application;
+- invoice processing;
+- refunds;
+- credits;
+- proration;
+- reactivation;
+- undo cancellation;
+- real provider adapters;
 - subscription history;
 - invoice history;
 - payment history;
 - immediate plan changes;
-- proration;
-- credits;
-- refunds;
 - invoice generation;
 - pending-plan replacement;
 - pending-plan cancellation as a separate workflow;
-- automatic renewal application;
-- final cancellation application at period end;
-- undo cancellation;
-- webhook event processing;
-- subscription mutation from events;
-- event ordering and stale-version handling;
-- background processing;
-- automatic retries;
-- stale `processing` recovery;
-- dead-letter handling;
-- provider reconciliation;
 - secret rotation;
 - multiple active signing secrets;
-- real provider-specific adapters;
-- entitlement updates;
 - rate limiting;
 - edge firewall configuration;
 - stale `in_progress` recovery;
@@ -3261,11 +3866,14 @@ The following capabilities are intentionally deferred:
 - semiannual billing;
 - multiple subscriptions per tenant;
 - multiple currencies;
-- reactivation;
 - production notification delivery.
 
-These capabilities are not required to establish the current domain,
-persistence, fake-provider, subscription-creation, subscription-read,
-scheduled plan-change, scheduled cancellation, and webhook-ingestion workflow
-foundations. They will be added only when their data ownership, transaction,
-security, failure, and testing boundaries are implemented explicitly.
+These are future operational and billing capabilities, not responsibilities of
+the implemented processing boundary.
+
+They are not required to establish the current domain, persistence,
+fake-provider, subscription-creation, subscription-read, scheduled
+plan-change, scheduled cancellation, webhook-ingestion, and webhook-processing
+workflow foundations. They will be added only when their data ownership,
+transaction, security, failure, and testing boundaries are implemented
+explicitly.
