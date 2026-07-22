@@ -13,12 +13,22 @@ The initial product is API-first and implemented as a modular monolith using Fas
 Current phase:
 
 ```text
-Implementation planning
+Active development
 ```
 
-The product context, system design, directory structure principles, and engineering standards are documented.
+ClinicOps currently has an implemented backend foundation covering:
 
-The implementation roadmap defines the planned delivery sequence, engineering risks, test focus, and completion criteria for each major capability.
+- identity and authentication;
+- tenant isolation and RBAC;
+- invitation onboarding;
+- membership administration and ownership transfer;
+- billing lifecycle;
+- webhook ingestion and processing;
+- billing reconciliation.
+
+The project is not yet at its final portfolio release. Operational background execution, auditability, and tenant-owned operational domains remain under development.
+
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria.
 
 ---
 
@@ -160,7 +170,7 @@ This preserves clear data ownership and prevents cross-tenant privacy leakage.
 
 ClinicOps uses a modular monolith.
 
-Initial runtime topology:
+Current runtime topology:
 
 ```text
 API Client
@@ -170,21 +180,16 @@ FastAPI API Process
     |
     v
 PostgreSQL
-    ^
-    |
-Background Worker Process
 ```
 
-The API and worker are separate runtime processes built from the same codebase.
+The architecture is designed so that a separate background worker process can share the same codebase when operational job execution is introduced.
 
 PostgreSQL is the source of truth for:
 
 - application data;
 - membership state;
 - billing state;
-- payment events;
-- audit records;
-- background jobs.
+- payment events.
 
 ---
 
@@ -211,7 +216,7 @@ Cross-module changes use explicit services or narrow interfaces.
 
 ## Technology Stack
 
-Planned core technologies:
+Core technologies:
 
 - Python
 - FastAPI
@@ -228,7 +233,7 @@ Planned core technologies:
 - GitHub Actions
 - structured logging
 
-Dependencies will be introduced only when they have a clear architectural purpose.
+Additional dependencies are introduced only when they have a clear architectural purpose.
 
 ---
 
@@ -254,9 +259,9 @@ The project explicitly addresses:
 
 ## Background Jobs
 
-ClinicOps uses a PostgreSQL-backed job queue.
+ClinicOps is designed to use a PostgreSQL-backed job queue for durable asynchronous work. Operational worker runtime and persisted job execution remain under development.
 
-The queue is designed for:
+The target queue design includes:
 
 - durable enqueueing;
 - worker-safe acquisition;
@@ -268,7 +273,7 @@ The queue is designed for:
 - dead-job inspection;
 - correlation ID propagation.
 
-Execution follows at-least-once semantics.
+Execution is intended to follow at-least-once semantics.
 
 Handlers that may repeat side effects must be idempotent.
 
@@ -276,19 +281,16 @@ Handlers that may repeat side effects must be idempotent.
 
 ## Billing and Webhooks
 
-The initial billing integration uses a fake payment provider.
+The implemented billing integration uses a fake payment provider for local and automated testing.
 
-This allows the system to exercise:
+The current foundation covers:
 
+- subscription persistence and lifecycle transitions;
 - signed webhook ingestion;
 - raw-body HMAC verification;
-- replay protection;
-- duplicate delivery;
-- idempotent event processing;
-- invoice transitions;
-- subscription transitions;
-- payment audit events;
-- asynchronous receipts.
+- durable webhook storage and duplicate handling;
+- webhook processing with provider-state ordering;
+- billing reconciliation.
 
 Provider-specific payloads are translated before entering the billing domain.
 
@@ -296,9 +298,9 @@ Provider-specific payloads are translated before entering the billing domain.
 
 ## Audit Logs and Application Logs
 
-Audit logs record business-relevant actions.
+ClinicOps distinguishes business audit records from operational application logs.
 
-Examples:
+Durable append-only audit persistence remains under development. The intended audit surface includes business-relevant actions such as:
 
 ```text
 tenant.created
@@ -311,7 +313,7 @@ invoice.paid
 tenant.suspended
 ```
 
-Application logs record operational behavior.
+Structured application logs already record operational request behavior, including request and correlation identifiers.
 
 Examples:
 
@@ -319,11 +321,10 @@ Examples:
 request_started
 request_finished
 webhook_signature_invalid
-job_retry_scheduled
 database_error
 ```
 
-Audit records and application logs serve different purposes and are stored and reviewed separately.
+Audit records and application logs serve different purposes and are intended to be stored and reviewed separately.
 
 ---
 
