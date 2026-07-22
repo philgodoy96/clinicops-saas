@@ -5,6 +5,7 @@ from clinicops.billing.webhooks.contracts import (
 from clinicops.billing.webhooks.handlers import (
     BillingWebhookHandlerResult,
     BillingWebhookTerminalProcessingError,
+    apply_billing_cancellation_event,
     apply_billing_renewal_event,
 )
 from clinicops.billing.webhooks.ingest import (
@@ -44,6 +45,7 @@ __all__ = [
     "ProcessBillingWebhookEventCommand",
     "ProcessBillingWebhookEventService",
     "ProcessedBillingWebhookEvent",
+    "apply_billing_cancellation_event",
     "apply_billing_renewal_event",
     "parse_billing_webhook_signature",
     "sign_billing_webhook_payload",

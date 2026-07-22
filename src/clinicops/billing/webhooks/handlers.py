@@ -164,6 +164,122 @@ def apply_billing_renewal_event(
     )
 
 
+def apply_billing_cancellation_event(
+    *,
+    event: BillingWebhookEvent,
+    subscription: Subscription,
+) -> BillingWebhookHandlerResult:
+    """Apply a monotonic provider-confirmed cancellation transition."""
+
+    envelope = _parse_persisted_event(event)
+    _validate_persisted_event_identity(
+        event=event,
+        envelope=envelope,
+    )
+    _validate_subscription_identity(
+        event=event,
+        subscription=subscription,
+    )
+
+    if event.provider_state_version <= subscription.provider_state_version:
+        return BillingWebhookHandlerResult(
+            subscription_id=subscription.id,
+            outcome=BillingWebhookProcessingOutcome.IGNORED,
+        )
+
+    if envelope.event_type is not BillingWebhookEventType.SUBSCRIPTION_CANCELED:
+        raise BillingWebhookTerminalProcessingError(
+            failure_code="unsupported_event_type",
+            internal_message=("The cancellation handler received a non-cancellation event."),
+        )
+
+    canceled_at = envelope.data.canceled_at
+
+    if canceled_at is None:
+        raise BillingWebhookTerminalProcessingError(
+            failure_code="missing_cancellation_timestamp",
+            internal_message=("A final cancellation event must include a cancellation timestamp."),
+        )
+
+    if envelope.data.price_code != subscription.price_code:
+        raise BillingWebhookTerminalProcessingError(
+            failure_code="unexpected_price_code",
+            internal_message=("A cancellation event cannot replace the active local price code."),
+        )
+
+    local_period_start = subscription.current_period_start
+    local_period_end = subscription.current_period_end
+
+    if local_period_start is None or local_period_end is None:
+        raise BillingWebhookTerminalProcessingError(
+            failure_code="missing_local_billing_period",
+            internal_message=("The local subscription does not have a complete billing period."),
+        )
+
+    event_period_start = envelope.data.current_period_start
+    event_period_end = envelope.data.current_period_end
+
+    if not (event_period_start <= canceled_at <= event_period_end):
+        raise BillingWebhookTerminalProcessingError(
+            failure_code="invalid_cancellation_timestamp",
+            internal_message=(
+                "The provider cancellation timestamp falls outside the event billing period."
+            ),
+        )
+
+    local_is_canceled = (
+        subscription.status is SubscriptionStatus.CANCELED or subscription.canceled_at is not None
+    )
+
+    if local_is_canceled:
+        if (
+            subscription.status is not SubscriptionStatus.CANCELED
+            or subscription.canceled_at != canceled_at
+            or event_period_start != local_period_start
+            or event_period_end != local_period_end
+        ):
+            raise BillingWebhookTerminalProcessingError(
+                failure_code="inconsistent_final_cancellation",
+                internal_message=(
+                    "The provider cancellation conflicts with "
+                    "the existing local final cancellation."
+                ),
+            )
+    else:
+        if event_period_start < local_period_start or event_period_end < local_period_end:
+            raise BillingWebhookTerminalProcessingError(
+                failure_code="invalid_cancellation_period",
+                internal_message=(
+                    "The provider cancellation period regresses the current local billing period."
+                ),
+            )
+
+        if subscription.cancel_at_period_end and (
+            event_period_end != local_period_end or canceled_at != local_period_end
+        ):
+            raise BillingWebhookTerminalProcessingError(
+                failure_code="cancellation_boundary_mismatch",
+                internal_message=(
+                    "The provider cancellation does not match "
+                    "the locally scheduled period boundary."
+                ),
+            )
+
+    subscription.status = SubscriptionStatus.CANCELED
+    subscription.canceled_at = canceled_at
+    subscription.cancel_at_period_end = False
+    subscription.pending_price_code = None
+    subscription.current_period_start = event_period_start
+    subscription.current_period_end = event_period_end
+    subscription.provider_state_version = event.provider_state_version
+    subscription.last_provider_event_at = event.provider_created_at
+
+    return BillingWebhookHandlerResult(
+        subscription_id=subscription.id,
+        outcome=BillingWebhookProcessingOutcome.APPLIED,
+    )
+
+
 def _parse_persisted_event(
     event: BillingWebhookEvent,
 ) -> BillingWebhookEventEnvelope:
