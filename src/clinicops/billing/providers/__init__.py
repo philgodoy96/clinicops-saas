@@ -28,10 +28,15 @@ from clinicops.billing.providers.idempotency import (
     fingerprint_provider_request,
     validate_provider_operation_key,
 )
+from clinicops.billing.providers.periods import (
+    BillingPeriod,
+    calculate_billing_period,
+)
 
 __all__ = [
     "MAX_PROVIDER_OPERATION_KEY_LENGTH",
     "PROVIDER_OPERATION_KEY_PREFIX",
+    "BillingPeriod",
     "CancelSubscriptionRequest",
     "CancelSubscriptionResult",
     "ChangePlanRequest",
@@ -50,6 +55,7 @@ __all__ = [
     "ProviderRetryableError",
     "ProviderTerminalError",
     "build_provider_operation_key",
+    "calculate_billing_period",
     "fingerprint_provider_request",
     "validate_provider_operation_key",
 ]
