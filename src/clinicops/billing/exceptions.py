@@ -317,3 +317,34 @@ class BillingWebhookPayloadTooLargeError(BillingError):
         super().__init__(
             f"Billing webhook payload size {actual_size} exceeds limit {maximum_size}."
         )
+
+
+class BillingWebhookPayloadInvalidError(BillingError):
+    """Raised when an authenticated webhook body is not canonical."""
+
+    code = "billing_webhook_payload_invalid"
+    public_message = "The billing webhook payload is invalid."
+
+    def __init__(
+        self,
+        internal_message: str = ("The authenticated billing webhook payload could not be parsed."),
+    ) -> None:
+        super().__init__(internal_message)
+
+
+class BillingWebhookEventConflictError(BillingError):
+    """Raised when a provider event ID is reused for another payload."""
+
+    code = "billing_webhook_event_conflict"
+    public_message = "The billing webhook event conflicts with a previously received event."
+
+    def __init__(
+        self,
+        *,
+        provider_event_id: str,
+    ) -> None:
+        super().__init__(
+            "Billing webhook provider event ID "
+            f"{provider_event_id!r} was reused with "
+            "different raw payload bytes."
+        )
