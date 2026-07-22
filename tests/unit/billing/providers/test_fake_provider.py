@@ -26,6 +26,9 @@ CREATE_CUSTOMER_KEY = build_provider_operation_key(UUID("96f33a49-1685-4ae6-aee4
 CREATE_SUBSCRIPTION_KEY = build_provider_operation_key(UUID("5fed4e42-5f15-4f7c-a20c-c79fa49f88a7"))
 CHANGE_PLAN_KEY = build_provider_operation_key(UUID("6d31f2aa-0a43-4655-991a-f81777222db7"))
 CANCEL_SUBSCRIPTION_KEY = build_provider_operation_key(UUID("06c2d33e-d774-4a9f-b0ef-f59ebf40a3ba"))
+SECOND_CANCEL_SUBSCRIPTION_KEY = build_provider_operation_key(
+    UUID("35bc2f1f-a7ce-44f9-8f4b-a438661bc341")
+)
 PERIOD_START = datetime(
     2026,
     7,
@@ -283,7 +286,7 @@ def test_change_plan_rejects_early_effective_at() -> None:
     assert exception_info.value.reason == ("billing_period_boundary_not_reached")
 
 
-def test_cancel_subscription_applies_at_period_boundary_once() -> None:
+def test_cancel_subscription_schedules_period_end_once() -> None:
     provider = FakePaymentProvider()
     provider_customer_id = _create_customer(provider)
     provider_subscription_id = _create_subscription(
@@ -304,7 +307,55 @@ def test_cancel_subscription_applies_at_period_boundary_once() -> None:
     assert replayed == first
 
 
-def test_new_mutation_is_rejected_after_cancellation() -> None:
+def test_cancel_subscription_rejects_early_effective_at() -> None:
+    provider = FakePaymentProvider()
+    provider_customer_id = _create_customer(provider)
+    provider_subscription_id = _create_subscription(
+        provider,
+        provider_customer_id=provider_customer_id,
+    )
+
+    with pytest.raises(ProviderInvalidStateError) as exception_info:
+        provider.cancel_subscription(
+            CancelSubscriptionRequest(
+                provider_operation_key=(CANCEL_SUBSCRIPTION_KEY),
+                provider_subscription_id=(provider_subscription_id),
+                effective_at=PERIOD_START,
+            )
+        )
+
+    assert exception_info.value.reason == ("billing_period_boundary_not_reached")
+
+
+def test_new_cancellation_is_rejected_while_one_is_pending() -> None:
+    provider = FakePaymentProvider()
+    provider_customer_id = _create_customer(provider)
+    provider_subscription_id = _create_subscription(
+        provider,
+        provider_customer_id=provider_customer_id,
+    )
+
+    provider.cancel_subscription(
+        CancelSubscriptionRequest(
+            provider_operation_key=(CANCEL_SUBSCRIPTION_KEY),
+            provider_subscription_id=(provider_subscription_id),
+            effective_at=MONTHLY_PERIOD_END,
+        )
+    )
+
+    with pytest.raises(ProviderInvalidStateError) as exception_info:
+        provider.cancel_subscription(
+            CancelSubscriptionRequest(
+                provider_operation_key=(SECOND_CANCEL_SUBSCRIPTION_KEY),
+                provider_subscription_id=(provider_subscription_id),
+                effective_at=MONTHLY_PERIOD_END,
+            )
+        )
+
+    assert exception_info.value.reason == ("subscription_cancellation_pending")
+
+
+def test_plan_change_is_rejected_after_cancellation_is_scheduled() -> None:
     provider = FakePaymentProvider()
     provider_customer_id = _create_customer(provider)
     provider_subscription_id = _create_subscription(
@@ -330,4 +381,4 @@ def test_new_mutation_is_rejected_after_cancellation() -> None:
             )
         )
 
-    assert exception_info.value.reason == "subscription_already_canceled"
+    assert exception_info.value.reason == ("subscription_cancellation_pending")

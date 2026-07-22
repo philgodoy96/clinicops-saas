@@ -6,7 +6,9 @@ from uuid import UUID
 import pytest
 
 from clinicops.billing.enums import ProviderOperationType
+from clinicops.billing.exceptions import BillingError
 from clinicops.billing.providers.contracts import (
+    CancelSubscriptionRequest,
     ChangePlanRequest,
     CreateCustomerRequest,
     CreateSubscriptionRequest,
@@ -17,7 +19,6 @@ from clinicops.billing.providers.control import (
 )
 from clinicops.billing.providers.exceptions import (
     ProviderAmbiguousOutcomeError,
-    ProviderError,
     ProviderIdempotencyConflictError,
     ProviderRetryableError,
     ProviderTerminalError,
@@ -33,6 +34,7 @@ CREATE_CUSTOMER_KEY = build_provider_operation_key(UUID("96f33a49-1685-4ae6-aee4
 SECOND_CUSTOMER_KEY = build_provider_operation_key(UUID("82645188-3f98-4e99-91a5-e1df47682192"))
 CREATE_SUBSCRIPTION_KEY = build_provider_operation_key(UUID("5fed4e42-5f15-4f7c-a20c-c79fa49f88a7"))
 CHANGE_PLAN_KEY = build_provider_operation_key(UUID("6d31f2aa-0a43-4655-991a-f81777222db7"))
+CANCEL_SUBSCRIPTION_KEY = build_provider_operation_key(UUID("06c2d33e-d774-4a9f-b0ef-f59ebf40a3ba"))
 PERIOD_START = datetime(
     2026,
     7,
@@ -286,6 +288,94 @@ def test_terminal_plan_change_rejection_is_replayed() -> None:
         provider.change_plan(request)
 
 
+def test_retryable_cancellation_can_retry_with_same_key() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = CancelSubscriptionRequest(
+        provider_operation_key=CANCEL_SUBSCRIPTION_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=(ProviderOperationType.CANCEL_SUBSCRIPTION),
+        outcome=FakeProviderOutcome.RETRYABLE_FAILURE,
+    )
+
+    with pytest.raises(ProviderRetryableError):
+        provider.cancel_subscription(request)
+
+    recovered = provider.cancel_subscription(request)
+
+    assert recovered.provider_state_version == 2
+    assert recovered.canceled_at == (created.current_period_end)
+
+
+def test_ambiguous_cancellation_replays_without_second_mutation() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = CancelSubscriptionRequest(
+        provider_operation_key=CANCEL_SUBSCRIPTION_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=(ProviderOperationType.CANCEL_SUBSCRIPTION),
+        outcome=FakeProviderOutcome.AMBIGUOUS_SUCCESS,
+    )
+
+    with pytest.raises(ProviderAmbiguousOutcomeError):
+        provider.cancel_subscription(request)
+
+    recovered = provider.cancel_subscription(request)
+
+    assert recovered.provider_state_version == 2
+    assert recovered.canceled_at == (created.current_period_end)
+
+
+def test_terminal_cancellation_rejection_is_replayed() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = CancelSubscriptionRequest(
+        provider_operation_key=CANCEL_SUBSCRIPTION_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=(ProviderOperationType.CANCEL_SUBSCRIPTION),
+        outcome=FakeProviderOutcome.TERMINAL_REJECTION,
+    )
+
+    with pytest.raises(ProviderTerminalError):
+        provider.cancel_subscription(request)
+
+    with pytest.raises(ProviderTerminalError):
+        provider.cancel_subscription(request)
+
+
 def test_scripted_outcomes_are_scoped_by_operation_type() -> None:
     provider, control = _provider_with_control()
     control.queue_outcome(
@@ -351,7 +441,7 @@ def test_ambiguous_success_is_atomic_under_concurrent_retries() -> None:
 )
 def test_controlled_outcomes_expose_stable_exception_codes(
     outcome: FakeProviderOutcome,
-    expected_exception: type[ProviderError],
+    expected_exception: type[BillingError],
 ) -> None:
     provider, control = _provider_with_control()
     control.queue_outcome(

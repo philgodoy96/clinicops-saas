@@ -80,6 +80,7 @@ class _FakeSubscription:
     provider_state_version: int
     pending_price_code: str | None = None
     pending_effective_at: datetime | None = None
+    pending_cancellation_at: datetime | None = None
     canceled_at: datetime | None = None
 
 
@@ -282,6 +283,14 @@ class FakePaymentProvider:
                 subscription=subscription,
                 operation_type=operation_type,
             )
+
+            if subscription.pending_cancellation_at is not None:
+                raise ProviderInvalidStateError(
+                    provider=self.provider,
+                    operation_type=operation_type,
+                    reason="subscription_cancellation_pending",
+                )
+
             target_price = self._resolve_price(
                 price_code=request.target_price_code,
                 operation_type=operation_type,
@@ -342,6 +351,8 @@ class FakePaymentProvider:
         self,
         request: CancelSubscriptionRequest,
     ) -> CancelSubscriptionResult:
+        """Schedule provider-side cancellation at period end."""
+
         operation_type = ProviderOperationType.CANCEL_SUBSCRIPTION
         request_fingerprint = fingerprint_provider_request(
             operation_type=operation_type,
@@ -378,6 +389,14 @@ class FakePaymentProvider:
                 subscription=subscription,
                 operation_type=operation_type,
             )
+
+            if subscription.pending_cancellation_at is not None:
+                raise ProviderInvalidStateError(
+                    provider=self.provider,
+                    operation_type=operation_type,
+                    reason="subscription_cancellation_pending",
+                )
+
             self._require_period_boundary(
                 effective_at=request.effective_at,
                 current_period_end=(subscription.current_period_end),
@@ -393,7 +412,7 @@ class FakePaymentProvider:
                 provider_reference=(f"fake_op_{stable_token}"),
             )
 
-            subscription.canceled_at = request.effective_at
+            subscription.pending_cancellation_at = request.effective_at
             subscription.pending_price_code = None
             subscription.pending_effective_at = None
             subscription.provider_state_version = next_version
