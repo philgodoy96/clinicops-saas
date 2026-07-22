@@ -21,11 +21,20 @@ The implemented billing foundation now establishes:
 - durable outbound provider-operation records;
 - durable inbound webhook-event records;
 - repository locking and known-conflict translation;
-- PostgreSQL schema, constraint, and concurrency coverage.
+- PostgreSQL schema, constraint, and concurrency coverage;
+- a synchronous payment-provider port;
+- immutable provider request and result contracts;
+- deterministic provider operation keys;
+- deterministic provider request fingerprints;
+- calendar-accurate monthly and yearly billing periods;
+- a thread-safe deterministic fake payment provider;
+- provider-side idempotent replay;
+- controlled retryable, terminal, and ambiguous provider outcomes.
 
-This document distinguishes the implemented domain and persistence foundation
-from the provider execution, API, webhook ingestion, entitlement, and worker
-capabilities planned for later milestones.
+This document distinguishes the implemented domain, persistence, and
+fake-provider foundations from the application services, API, webhook
+ingestion, entitlement, worker, and real-provider capabilities planned for
+later milestones.
 
 ## Module Ownership
 
@@ -49,14 +58,25 @@ The billing module currently owns:
 - inbound billing webhook-event persistence;
 - billing repositories and row-locking primitives;
 - PostgreSQL constraints for core billing invariants;
-- Alembic registration and migration parity.
+- Alembic registration and migration parity;
+- the synchronous payment-provider abstraction;
+- provider request and result contracts;
+- provider operation-key generation and validation;
+- provider request fingerprinting;
+- calendar-accurate billing-period calculation;
+- deterministic fake provider identifiers;
+- in-memory fake customer and subscription state;
+- provider-side idempotency;
+- controlled fake-provider failure simulation;
+- fake-provider thread safety.
 
 The current billing implementation does not own:
 
-- FastAPI billing routes;
 - tenant billing application services;
-- payment-provider execution;
-- provider-side retry execution;
+- FastAPI billing routes;
+- real payment-provider integrations;
+- provider-operation database orchestration;
+- provider retry scheduling;
 - webhook HMAC verification;
 - webhook HTTP ingestion;
 - webhook business processing;
@@ -495,9 +515,10 @@ Fingerprints do not include:
 The selected `price_code` represents the commercial choice. Currency,
 billing interval, and unit amount remain server-owned catalog values.
 
-## Future Outbound Idempotency Boundary
+## Outbound Idempotency Boundary
 
-A later persistence milestone will introduce a durable provider operation.
+`ProviderOperation` persistence is implemented. Provider operation-key
+construction and provider-side fake replay are also implemented.
 
 Conceptually:
 
@@ -530,11 +551,10 @@ Same key and different fingerprint
     -> reject idempotency-key reuse
 ```
 
-The current foundation validates keys and computes fingerprints but does not
-persist or compare operations.
-
-Provider-side idempotency is also deferred until the payment-provider
-boundary exists.
+Application-service coordination between the database reservation and the
+provider call remains deferred. Durable response replay to API clients
+remains deferred. Provider execution retries and background processing
+remain deferred.
 
 ## Future Webhook Idempotency Boundary
 
@@ -571,19 +591,15 @@ All lifecycle timestamps must be timezone-aware.
 
 The pure state machine rejects naive datetimes.
 
-The current implementation compares supplied period boundaries but does not
-calculate them.
+The pure lifecycle compares supplied period boundaries but does not calculate
+them.
 
-Monthly and yearly period calculation will be introduced when the provider
-and application workflows define:
+Monthly and yearly period calculation is implemented in the provider
+foundation through calendar arithmetic. That layer normalizes timezone-aware
+timestamps to UTC and clamps month-end and leap-year anniversaries to valid
+calendar days.
 
-- subscription activation timestamps;
-- provider-confirmed billing periods;
-- anniversary behavior;
-- yearly rollover behavior;
-- retry and reconciliation semantics.
-
-No new calendar library is introduced in the domain foundation.
+No new calendar library is introduced for billing-period calculation.
 
 ## Exception Boundary
 
@@ -932,24 +948,289 @@ Concurrent tests use independent database sessions and committed fixtures.
 Each test scopes verification and cleanup to identifiers owned by that test.
 No billing integration assertion assumes the global database is empty.
 
-## Planned Provider Boundary
+## Implemented Payment-Provider Boundary
 
-A later milestone will introduce a payment-provider port and a deterministic
-fake provider.
+ClinicOps now defines a synchronous `PaymentProvider` port.
 
-The fake provider is planned to support controlled scenarios such as:
+The port exposes four billing mutations:
+
+```text
+create_customer
+create_subscription
+change_plan
+cancel_subscription
+```
+
+Each method accepts an immutable request contract and returns an immutable
+provider-confirmed result contract.
+
+The provider boundary does not receive:
+
+- SQLAlchemy sessions;
+- repositories;
+- FastAPI request objects;
+- tenant authorization context;
+- client access tokens;
+- provider credentials;
+- webhook requests;
+- background-job records.
+
+Tenant ownership and local transaction coordination remain outside the
+provider port.
+
+Provider requests use ClinicOps public `price_code` values. A provider adapter
+is responsible for translating those values to its provider-specific price
+identifiers.
+
+The current port is synchronous. Background execution may call the same port
+later without changing the provider contract.
+
+## Provider Operation Keys
+
+Client idempotency keys and provider operation keys are separate identities.
+
+Client billing mutations use an opaque client-generated key persisted on
+`ProviderOperation`.
+
+Provider calls use a stable internal key derived from the persisted provider
+operation ID:
+
+```text
+clinicops:<provider_operation_uuid>
+```
+
+Example:
+
+```text
+clinicops:96f33a49-1685-4ae6-aee4-fb5ebddaa94c
+```
+
+The provider operation key:
+
+- is generated by ClinicOps;
+- uses the canonical persisted operation UUID;
+- is globally unique within a provider instance;
+- is limited to 255 characters;
+- is not exposed as the client idempotency contract;
+- remains stable across retries of the same outbound operation.
+
+Provider request fingerprints are calculated separately from the key.
+
+The fingerprint includes:
+
+- the provider operation type;
+- explicit provider request fields;
+- canonical UUID strings;
+- UTC ISO-8601 timestamps;
+- stable enum values;
+- sorted compact JSON;
+- SHA-256 hexadecimal output.
+
+Unsupported fingerprint value types are rejected. Silent serialization
+fallbacks are not used.
+
+## Billing-Period Calculation
+
+The provider foundation calculates monthly and yearly periods through calendar
+arithmetic.
+
+Monthly periods advance one calendar month.
+
+Yearly periods advance one calendar year.
+
+Month-end and leap-year dates are clamped to the final valid day of the target
+month.
+
+Examples:
+
+```text
+2026-01-31 -> 2026-02-28
+2028-01-31 -> 2028-02-29
+2028-02-29 -> 2029-02-28
+```
+
+Input timestamps must be timezone-aware and are normalized to UTC before
+calendar arithmetic.
+
+The implementation does not approximate:
+
+```text
+one month = 30 days
+one year = 365 days
+```
+
+No external date-arithmetic dependency is required.
+
+## Deterministic Fake Payment Provider
+
+`FakePaymentProvider` is the implemented local payment-provider adapter.
+
+It is intentionally used before a real payment provider to provide:
+
+- deterministic local development;
+- repeatable tests;
+- provider-side idempotency simulation;
+- controlled temporary failures;
+- controlled terminal rejections;
+- ambiguous timeout simulation;
+- subscription state-version behavior;
+- calendar-period confirmation;
+- zero external credentials;
+- zero payment-processing cost.
+
+The fake provider owns in-memory representations of:
+
+```text
+provider customers
+provider subscriptions
+provider operation outcomes
+```
+
+It supports one provider subscription per fake customer in V1.
+
+Provider identifiers are derived deterministically from the provider operation
+key through SHA-256.
+
+Formats are:
+
+```text
+fake_cus_<stable token>
+fake_sub_<stable token>
+fake_op_<stable token>
+```
+
+A successful subscription creation establishes provider state version `1`.
+
+Each successful distinct plan change or cancellation increments the
+subscription provider state version exactly once.
+
+The fake provider models provider-confirmed mutation outcomes. It does not
+model the complete local subscription lifecycle, tenant authorization, API
+transport, database transactions, or entitlement behavior.
+
+## Fake Provider Idempotency
+
+The fake provider stores operation outcomes by provider operation key.
+
+The implemented behavior is:
+
+```text
+same provider key + same request
+    -> return the stored result
+```
+
+```text
+same provider key + different request
+    -> raise a provider idempotency conflict
+```
+
+The provider operation type and request fingerprint are both checked before a
+stored result is replayed.
+
+Provider-side replay is independent from the local database behavior that
+compares the client idempotency key and the persisted command fingerprint.
+
+## Controlled Provider Outcomes
+
+Failure simulation is configured through a dedicated `FakeProviderControl`.
+
+Test-only outcome controls do not appear in application-facing provider
+request contracts.
+
+Outcomes are queued by provider operation type:
 
 ```text
 success
-temporary failure
-terminal rejection
-timeout after provider-side success
-repeated provider idempotency key
+retryable_failure
+terminal_rejection
+ambiguous_success
 ```
 
-The fake provider is an intentional reliability-testing boundary. It avoids
-real credentials, monetary cost, and uncontrolled external dependencies while
-preserving the failure modes required for production-minded billing design.
+### Retryable failure
+
+A retryable failure occurs before provider-side mutation.
+
+It does not:
+
+- create provider state;
+- reserve a provider operation outcome;
+- prevent a later retry with the same key.
+
+A later retry may execute normally.
+
+### Terminal rejection
+
+A terminal rejection is stored as the provider-side outcome for that key.
+
+A retry with the same key and the same request reproduces the terminal
+failure.
+
+A different provider operation key represents a different provider attempt.
+
+### Ambiguous success
+
+An ambiguous success models a timeout after provider-side mutation.
+
+The fake provider:
+
+1. applies the provider mutation;
+2. stores the successful idempotent result;
+3. raises an ambiguous-outcome exception to the caller.
+
+A retry with the same key and request returns the stored successful result.
+
+The retry does not:
+
+- create another customer;
+- create another subscription;
+- apply the plan change again;
+- apply the cancellation again;
+- increment the provider state version again.
+
+This behavior models the reason stable provider-side idempotency is required
+for real external integrations.
+
+## Fake Provider Thread Safety
+
+The fake provider protects its in-memory state through one instance-level
+lock.
+
+Each idempotency check, state mutation, and result persistence occurs within
+the same critical section.
+
+For ambiguous success, the successful result is persisted before the
+ambiguous-outcome exception is raised.
+
+The simple single-lock design is intentional. It prevents provider-side
+idempotency races without introducing unnecessary lock hierarchies into an
+in-memory development adapter.
+
+## Future Real Provider Integrations
+
+The payment-provider port and deterministic fake implementation are now
+implemented.
+
+Real provider adapters remain intentionally deferred.
+
+A real adapter will require explicit decisions for:
+
+- credential storage and rotation;
+- provider API authentication;
+- network timeouts;
+- transport retry policy;
+- rate limits;
+- provider-specific error translation;
+- provider price identifier mapping;
+- API-version management;
+- provider observability;
+- secret redaction;
+- reconciliation behavior;
+- sandbox and production account separation.
+
+A real provider must preserve the same application-facing port and provider
+operation-key semantics where the external API supports idempotency.
+
+The fake provider is not presented as a real payment integration.
 
 ## Planned API Boundary
 
@@ -1033,6 +1314,27 @@ Coverage includes:
 - insertion-order independence;
 - operation-type separation.
 
+The provider foundation is verified through pure unit tests.
+
+Coverage includes:
+
+- immutable provider request and result contracts;
+- timezone validation and UTC normalization;
+- provider operation-key validation;
+- exact provider request fingerprints;
+- calendar anniversary calculation;
+- month-end and leap-year behavior;
+- deterministic provider identifiers;
+- successful provider replay;
+- one subscription per fake customer;
+- provider state-version increments;
+- retryable failures;
+- terminal rejection replay;
+- ambiguous success recovery;
+- idempotency conflicts;
+- operation-scoped failure scripting;
+- thread-safe concurrent retries.
+
 The persistence foundation is verified through PostgreSQL integration tests.
 
 Coverage includes:
@@ -1060,8 +1362,8 @@ alembic upgrade head
 alembic check
 ```
 
-HTTP, provider execution, webhook ingestion, and background-worker tests are
-added only when those implementation boundaries exist.
+HTTP, real-provider execution, webhook ingestion, and background-worker tests
+are added only when those implementation boundaries exist.
 
 ## Invariants
 
@@ -1125,12 +1427,49 @@ The domain foundation establishes these invariants:
 24. Persistence-level concurrency relies on row locks and database
     constraints rather than process-local synchronization.
 
+25. Provider operation keys are derived from persisted provider operation UUIDs
+    using the stable `clinicops:<uuid>` format.
+
+26. Provider request fingerprints exclude the provider operation key and
+    deterministically represent the requested mutation.
+
+27. Provider request datetimes are timezone-aware and normalized to UTC.
+
+28. Monthly and yearly billing periods use calendar arithmetic rather than
+    fixed-day approximations.
+
+29. The same provider key and request replay the same provider outcome.
+
+30. The same provider key with a different request is rejected.
+
+31. Retryable fake-provider failures do not mutate provider state or reserve
+    an operation outcome.
+
+32. Terminal fake-provider rejections are replayable outcomes for the same
+    key and request.
+
+33. Ambiguous fake-provider success persists the successful result before
+    reporting uncertainty.
+
+34. Retrying an ambiguous success does not duplicate the mutation or increment
+    provider state again.
+
+35. Fake-provider in-memory mutations and idempotency decisions are
+    thread-safe.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
 - API-level idempotent response replay;
 - real payment providers;
+- payment credentials;
+- provider application-service orchestration;
+- retry scheduling;
+- background workers;
+- webhook ingestion and processing;
+- entitlements;
+- actual monetary processing;
 - payment-method collection;
 - hosted checkout;
 - credit-card processing;
@@ -1148,13 +1487,10 @@ The following capabilities are intentionally deferred:
 - multiple currencies;
 - immediate cancellation;
 - subscription reactivation;
-- entitlement enforcement;
-- webhook ingestion;
-- webhook HMAC verification;
 - reconciliation jobs;
-- worker infrastructure;
 - production notification delivery.
 
-These capabilities are not required to establish the current domain
-foundation. They will be added only when their data ownership, transaction,
-security, failure, and testing boundaries are implemented explicitly.
+These capabilities are not required to establish the current domain,
+persistence, and fake-provider foundations. They will be added only when
+their data ownership, transaction, security, failure, and testing boundaries
+are implemented explicitly.
