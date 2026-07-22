@@ -3,8 +3,8 @@
 ## Purpose
 
 The ClinicOps billing module defines the commercial catalog, subscription
-lifecycle rules, and durable PostgreSQL persistence required by future billing
-application workflows.
+lifecycle rules, durable PostgreSQL persistence, and the tenant-scoped
+subscription-creation workflow required by ClinicOps billing.
 
 The implemented billing foundation now establishes:
 
@@ -29,12 +29,23 @@ The implemented billing foundation now establishes:
 - calendar-accurate monthly and yearly billing periods;
 - a thread-safe deterministic fake payment provider;
 - provider-side idempotent replay;
-- controlled retryable, terminal, and ambiguous provider outcomes.
+- controlled retryable, terminal, and ambiguous provider outcomes;
+- tenant-scoped billing subscription creation;
+- billing mutation authorization through `BILLING_MANAGE`;
+- required client `Idempotency-Key` handling;
+- durable `ProviderOperation` reservation;
+- customer creation and subscription creation as separate outbound operations;
+- database commits before provider calls;
+- result application in later transactions;
+- successful API replay from the persisted `Subscription`;
+- retryable and terminal provider failure persistence;
+- ambiguous provider outcome recovery with the same provider operation key;
+- PostgreSQL integration and concurrency coverage.
 
-This document distinguishes the implemented domain, persistence, and
-fake-provider foundations from the application services, API, webhook
-ingestion, entitlement, worker, and real-provider capabilities planned for
-later milestones.
+This document distinguishes the implemented domain, persistence,
+fake-provider, and subscription-creation workflow foundations from the
+webhook ingestion, entitlement, worker, plan-change, cancellation, and
+real-provider capabilities planned for later milestones.
 
 ## Module Ownership
 
@@ -68,15 +79,23 @@ The billing module currently owns:
 - in-memory fake customer and subscription state;
 - provider-side idempotency;
 - controlled fake-provider failure simulation;
-- fake-provider thread safety.
+- fake-provider thread safety;
+- tenant-scoped subscription-creation application orchestration;
+- FastAPI billing subscription-creation routes;
+- `BILLING_MANAGE` authorization for billing mutations;
+- required client `Idempotency-Key` extraction and validation at the HTTP
+  boundary;
+- durable `CREATE_CUSTOMER` and `CREATE_SUBSCRIPTION` reservation and claim
+  orchestration.
 
 The current billing implementation does not own:
 
-- tenant billing application services;
-- FastAPI billing routes;
+- plan-change application services and API;
+- subscription-cancellation application services and API;
 - real payment-provider integrations;
-- provider-operation database orchestration;
+- stale in-progress recovery;
 - provider retry scheduling;
+- background provider execution;
 - webhook HMAC verification;
 - webhook HTTP ingestion;
 - webhook business processing;
@@ -84,9 +103,9 @@ The current billing implementation does not own:
 - background-job execution;
 - audit-log persistence.
 
-Those capabilities are intentionally introduced in later milestones after
-their security, transaction, failure, and recovery boundaries are implemented
-explicitly.
+Those deferred capabilities are intentionally introduced in later milestones
+after their security, transaction, failure, and recovery boundaries are
+implemented explicitly.
 
 ## Billing Ownership
 
@@ -98,12 +117,11 @@ A subscription is not owned by:
 - a membership;
 - the current tenant owner.
 
-Tenant ownership determines who may eventually manage billing, but changing
-the tenant owner does not transfer, replace, or recreate the tenant
-subscription.
+Tenant ownership determines who may manage billing, but changing the tenant
+owner does not transfer, replace, or recreate the tenant subscription.
 
-The persistence and authorization boundaries for this rule are planned for
-later milestones.
+Subscription creation is authorized through tenant-scoped
+`BILLING_MANAGE`. The current policy grants that permission to tenant owners.
 
 ## V1 Commercial Catalog
 
@@ -138,7 +156,7 @@ Amounts are stored in integer minor units:
 
 Binary floating-point values are not used for money.
 
-API clients will eventually select a stable `price_code`. They will not
+API clients select a stable `price_code`. They do not
 submit:
 
 - monetary amounts;
@@ -427,10 +445,10 @@ Version 8 must not reactivate the canceled subscription.
 
 ## Client Idempotency Keys
 
-Future billing mutation routes will require a client-generated
-`Idempotency-Key`.
+Billing mutation routes require a client-generated `Idempotency-Key`.
 
-The current domain foundation defines its reusable validation contract.
+The domain foundation defines the reusable validation contract. The billing
+subscription-creation HTTP boundary extracts and requires the header.
 
 A valid key is:
 
@@ -462,9 +480,6 @@ tenant_id:subscription:month_year
 
 Such a key could collide with multiple legitimate operations initiated
 during the same billing period.
-
-The HTTP boundary that extracts and requires the header is intentionally
-deferred to the billing API milestone.
 
 ## Billing Command Fingerprints
 
@@ -534,7 +549,7 @@ ProviderOperation
 └── failure details
 ```
 
-The future application workflow will evaluate:
+The subscription-creation workflow evaluates:
 
 ```text
 No stored operation
@@ -551,10 +566,9 @@ Same key and different fingerprint
     -> reject idempotency-key reuse
 ```
 
-Application-service coordination between the database reservation and the
-provider call remains deferred. Durable response replay to API clients
-remains deferred. Provider execution retries and background processing
-remain deferred.
+Subscription creation coordinates database reservation, provider calls, and
+durable response replay. Stale in-progress recovery, scheduled retries, and
+background provider execution remain deferred.
 
 ## Future Webhook Idempotency Boundary
 
@@ -620,7 +634,8 @@ They do not contain:
 - provider credentials;
 - client secrets.
 
-HTTP Problem Details mappings will be added when billing API routes exist.
+HTTP Problem Details mappings exist for the implemented billing subscription
+mutation routes.
 
 ## Dependency Boundaries
 
@@ -657,9 +672,9 @@ webhook request objects
 background workers
 ```
 
-Application services, provider adapters, API routes, and workers will depend
-on the domain and persistence layers. The domain and persistence foundations
-must not depend on those future transports or execution mechanisms.
+Application services, provider adapters, API routes, and workers depend on
+the domain and persistence layers. The domain and persistence foundations
+must not depend on those transports or execution mechanisms.
 
 ## Implemented Persistence Boundary
 
@@ -799,8 +814,8 @@ operation_type
 idempotency_key
 ```
 
-The request fingerprint is stored separately so a future application service
-can distinguish:
+The request fingerprint is stored separately so the subscription-creation
+workflow can distinguish:
 
 ```text
 same key + same fingerprint
@@ -821,7 +836,7 @@ failed_terminal
 ```
 
 No retry executor exists yet. The status model preserves the distinction
-required by the later provider and worker milestones.
+required by later reliability and worker milestones.
 
 JSONB request and result payloads store structured provider-safe metadata.
 They must never contain secrets, credentials, authorization material, or
@@ -904,15 +919,17 @@ Repositories:
 
 Transaction ownership remains outside the repository boundary.
 
-Future API routes and worker handlers will own their outer transactions.
-Application services will coordinate repositories and flush without committing.
+API routes own their outer request scope. The subscription-creation
+orchestrator is an explicit exception that commits short transactions around
+provider calls. Other application services continue to coordinate
+repositories and flush without committing unless a later workflow documents
+the same exception.
 
 ## Persistence Locking Model
 
-The persistence layer exposes locking primitives without defining complete
-application workflows.
+The persistence layer exposes locking primitives used by billing workflows.
 
-The planned tenant billing mutation order is:
+The tenant billing mutation order is:
 
 ```text
 Tenant
@@ -921,7 +938,7 @@ Tenant
     -> ProviderOperation
 ```
 
-Webhook processing uses a separate entry order:
+Webhook processing will use a separate entry order:
 
 ```text
 BillingWebhookEvent
@@ -931,7 +948,8 @@ BillingWebhookEvent
 
 Webhook events are not forced into the tenant-initiated mutation lock chain.
 
-The final lock orchestration remains an application-service responsibility.
+Lock orchestration for subscription creation is an application-service
+responsibility.
 
 ## Persistence Concurrency Guarantees
 
@@ -1232,20 +1250,324 @@ operation-key semantics where the external API supports idempotency.
 
 The fake provider is not presented as a real payment integration.
 
+## Implemented Subscription-Creation Workflow
+
+ClinicOps now exposes one tenant-scoped subscription-creation mutation:
+
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
+The request body is:
+
+```json
+{
+  "price_code": "starter_monthly"
+}
+```
+
+The request must also include:
+
+```text
+Idempotency-Key: <opaque client-generated key>
+```
+
+The client does not control:
+
+- tenant ownership;
+- amount;
+- currency;
+- billing interval;
+- provider customer identifiers;
+- provider subscription identifiers;
+- provider operation keys;
+- subscription status;
+- provider state versions.
+
+The server resolves pricing from the billing catalog and tenant identity from
+the authorized path context.
+
+The mutation requires:
+
+```text
+TenantPermission.BILLING_MANAGE
+```
+
+The current authorization policy grants billing management to tenant owners.
+Administrators have billing read access only, and staff members do not receive
+billing administration permissions.
+
+## Durable Workflow Decomposition
+
+A single client subscription request may create two durable outbound
+operations:
+
+```text
+CREATE_CUSTOMER
+CREATE_SUBSCRIPTION
+```
+
+When a tenant already has a linked billing customer, only
+`CREATE_SUBSCRIPTION` is required.
+
+The same validated client idempotency key is stored on both operation types.
+The database uniqueness boundary remains:
+
+```text
+tenant_id + operation_type + idempotency_key
+```
+
+Each persisted provider operation has its own UUID and therefore its own
+provider-side operation key:
+
+```text
+clinicops:<provider_operation_uuid>
+```
+
+Customer creation is never performed as an untracked provider side effect.
+
+This preserves recovery after partial success, including the case where
+provider customer creation succeeds but subscription creation has not started
+or completed.
+
+## Transaction Boundaries
+
+Subscription creation intentionally uses multiple short database
+transactions.
+
+The full path without an existing billing customer is:
+
+```text
+Transaction A
+    -> validate or reserve CREATE_CUSTOMER
+    -> validate or reserve CREATE_SUBSCRIPTION
+    -> claim CREATE_CUSTOMER as in_progress
+    -> commit
+
+Provider customer call
+    -> no database transaction open
+
+Transaction B
+    -> persist BillingCustomer
+    -> mark CREATE_CUSTOMER succeeded
+    -> claim CREATE_SUBSCRIPTION as in_progress
+    -> commit
+
+Provider subscription call
+    -> no database transaction open
+
+Transaction C
+    -> persist active Subscription
+    -> mark CREATE_SUBSCRIPTION succeeded
+    -> commit
+```
+
+When the billing customer already exists:
+
+```text
+Transaction A
+    -> validate or reserve CREATE_SUBSCRIPTION
+    -> claim CREATE_SUBSCRIPTION as in_progress
+    -> commit
+
+Provider subscription call
+    -> no database transaction open
+
+Transaction B
+    -> persist active Subscription
+    -> mark CREATE_SUBSCRIPTION succeeded
+    -> commit
+```
+
+The application orchestrator owns these commits as an explicit exception to
+the normal single-transaction service convention.
+
+This is intentional because provider calls must never execute while a
+database transaction remains open.
+
+After every commit, the orchestrator reloads and locks durable records before
+applying provider results.
+
+## Client Idempotency Behavior
+
+For subscription creation:
+
+```text
+same tenant + same operation type + same client key + same fingerprint
+    -> resume or replay the same logical workflow
+```
+
+```text
+same tenant + same operation type + same client key + different fingerprint
+    -> 409 Conflict
+```
+
+```text
+new client key + existing tenant subscription
+    -> 409 Conflict
+    -> provider is not called
+```
+
+The `CREATE_SUBSCRIPTION` command fingerprint includes the server-validated
+`price_code`.
+
+The `CREATE_CUSTOMER` command fingerprint contains no client-controlled
+fields.
+
+A successful replay reconstructs the HTTP response from the persisted
+`Subscription` row rather than trusting only provider response JSON.
+
+First successful execution returns:
+
+```text
+201 Created
+```
+
+A successful idempotent replay returns:
+
+```text
+200 OK
+```
+
+## ProviderOperation Statuses in the Synchronous Workflow
+
+The implemented transitions are:
+
+```text
+pending -> in_progress
+failed_retryable -> in_progress
+
+in_progress -> succeeded
+in_progress -> failed_retryable
+in_progress -> failed_terminal
+```
+
+`in_progress` is committed before the provider call so competing requests can
+observe that another execution currently owns the operation.
+
+A succeeded operation is replayed without another provider call.
+
+A failed terminal operation is not reclaimed.
+
+A failed retryable operation may be claimed again by the same logical
+workflow.
+
+Stale `in_progress` reclamation is intentionally deferred to later reliability
+and background-job work.
+
+## Provider Result Persistence
+
+Successful customer creation persists:
+
+```json
+{
+  "provider_customer_id": "fake_cus_...",
+  "provider_reference": "fake_op_..."
+}
+```
+
+Successful subscription creation persists:
+
+```json
+{
+  "provider_subscription_id": "fake_sub_...",
+  "provider_state_version": 1,
+  "current_period_start": "<UTC ISO-8601>",
+  "current_period_end": "<UTC ISO-8601>",
+  "provider_reference": "fake_op_..."
+}
+```
+
+The provider reference is also stored in its dedicated operation column.
+
+The payload does not contain:
+
+- client secrets;
+- provider credentials;
+- bearer tokens;
+- payment-card data;
+- raw exception traces.
+
+Public HTTP responses do not expose provider customer or subscription
+identifiers.
+
+## Provider Failure Handling
+
+Retryable provider errors are persisted as:
+
+```text
+failed_retryable
+```
+
+The API returns:
+
+```text
+503 Service Unavailable
+```
+
+Ambiguous provider outcomes use the same local retryable status. A later
+request retries with the same stable provider operation key, allowing the fake
+provider to replay its already-stored successful result without duplicating
+the mutation.
+
+Terminal provider rejections are persisted as:
+
+```text
+failed_terminal
+```
+
+The API returns:
+
+```text
+409 Conflict
+```
+
+The same client key does not trigger another provider attempt after a terminal
+outcome.
+
+## Concurrency Guarantees
+
+Subscription creation does not claim exactly-once execution.
+
+The implementation combines:
+
+- PostgreSQL unique constraints;
+- row-level locks;
+- committed `in_progress` ownership;
+- provider-side idempotency;
+- one subscription row per tenant;
+- one fake provider subscription per fake customer.
+
+For concurrent requests using the same client key, one execution owns the
+provider operation. Another request may replay the completed result or receive
+an operation-in-progress conflict.
+
+For concurrent requests using different client keys, the local subscription
+uniqueness constraint remains the final source of truth.
+
+At-least-once provider attempts remain possible under competing distinct
+keys. Provider idempotency and local uniqueness constrain the effect but do
+not create an exactly-once guarantee.
+
 ## Planned API Boundary
+
+Implemented tenant billing routes currently provide:
+
+```text
+create subscription
+```
 
 Future tenant billing routes are expected to provide:
 
 ```text
-create subscription
 read subscription
 schedule price change
 schedule period-end cancellation
 ```
 
-Mutation routes will require an `Idempotency-Key`.
+Mutation routes require an `Idempotency-Key`.
 
-The future authorization model is planned as:
+The authorization model is:
 
 ```text
 OWNER
@@ -1259,8 +1581,7 @@ STAFF
     -> no billing administration permission
 ```
 
-These API and authorization capabilities are not part of the current domain
-foundation.
+Plan-change and cancellation API surfaces remain deferred.
 
 ## Planned Background Processing Boundary
 
@@ -1353,7 +1674,18 @@ Coverage includes:
 - repository flush behavior without commits;
 - concurrent uniqueness races;
 - bounded row-lock contention;
-- cleanup scoped to test-owned data.
+- cleanup scoped to test-owned data;
+- persisted BillingCustomer and Subscription assertions;
+- persisted CREATE_CUSTOMER and CREATE_SUBSCRIPTION operations;
+- successful idempotent replay;
+- same-key fingerprint conflicts;
+- new-key existing-subscription conflicts;
+- ambiguous customer result recovery;
+- terminal subscription rejection persistence;
+- independent PostgreSQL sessions per concurrent thread;
+- concurrent same-key requests;
+- concurrent different-key requests;
+- scoped cleanup by test-owned tenant IDs.
 
 Migration parity is checked through:
 
@@ -1362,8 +1694,9 @@ alembic upgrade head
 alembic check
 ```
 
-HTTP, real-provider execution, webhook ingestion, and background-worker tests
-are added only when those implementation boundaries exist.
+Real-provider execution, webhook ingestion, plan-change, cancellation, and
+background-worker tests are added only when those implementation boundaries
+exist.
 
 ## Invariants
 
@@ -1457,40 +1790,76 @@ The domain foundation establishes these invariants:
 35. Fake-provider in-memory mutations and idempotency decisions are
     thread-safe.
 
+36. Billing subscription creation requires an authorized tenant context with
+    `BILLING_MANAGE`.
+
+37. Every billing subscription mutation requires a validated client
+    `Idempotency-Key`.
+
+38. Provider customer creation is represented by a durable
+    `CREATE_CUSTOMER` operation.
+
+39. Provider subscription creation is represented by a durable
+    `CREATE_SUBSCRIPTION` operation.
+
+40. Provider calls occur only after the transaction that claims the operation
+    has committed.
+
+41. Provider results are applied only after reloading the operation under a
+    database lock.
+
+42. The same successful client request replays the persisted subscription
+    without another provider call.
+
+43. A client key reused with a different command fingerprint is rejected.
+
+44. A new client key cannot create a second subscription lifecycle for the
+    same tenant.
+
+45. Provider identifiers are not exposed by the public subscription response.
+
+46. The synchronous workflow does not reclaim stale `in_progress` operations.
+
+47. The workflow provides at-least-once attempts with idempotent boundaries,
+    not exactly-once execution.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
-- API-level idempotent response replay;
-- real payment providers;
+- plan-change application service and API;
+- subscription cancellation application service and API;
+- stale in-progress recovery;
+- scheduled retries;
+- background provider execution;
+- webhook ingestion;
+- webhook HMAC verification;
+- webhook business processing;
+- entitlement enforcement;
+- real provider adapters;
 - payment credentials;
-- provider application-service orchestration;
-- retry scheduling;
-- background workers;
-- webhook ingestion and processing;
-- entitlements;
+- refunds;
+- proration;
+- immediate cancellation;
 - actual monetary processing;
 - payment-method collection;
 - hosted checkout;
 - credit-card processing;
 - invoices;
 - taxes;
-- refunds;
 - coupons;
 - trials;
-- proration;
 - partial-period credits;
 - usage-based pricing;
 - seat-based pricing;
 - semiannual billing;
 - multiple subscriptions per tenant;
 - multiple currencies;
-- immediate cancellation;
 - subscription reactivation;
 - reconciliation jobs;
 - production notification delivery.
 
 These capabilities are not required to establish the current domain,
-persistence, and fake-provider foundations. They will be added only when
-their data ownership, transaction, security, failure, and testing boundaries
-are implemented explicitly.
+persistence, fake-provider, and subscription-creation workflow foundations.
+They will be added only when their data ownership, transaction, security,
+failure, and testing boundaries are implemented explicitly.
