@@ -7,7 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from clinicops.billing.catalog import get_price_definition
+from clinicops.billing.catalog import (
+    PriceDefinition,
+    get_price_definition,
+)
 from clinicops.billing.enums import (
     BillingProvider,
     BillingReconciliationOutcome,
@@ -311,7 +314,7 @@ class ReconcileBillingSubscriptionService:
                 identity=identity,
             )
 
-            result = _reconcile_active_subscription(
+            result = _reconcile_subscription(
                 subscription=subscription,
                 snapshot=snapshot,
             )
@@ -365,7 +368,7 @@ class ReconcileBillingSubscriptionService:
         )
 
 
-def _reconcile_active_subscription(
+def _reconcile_subscription(
     *,
     subscription: Subscription,
     snapshot: BillingProviderSubscriptionSnapshot,
@@ -383,19 +386,35 @@ def _reconcile_active_subscription(
             provider_state_version=(snapshot.provider_state_version),
         )
 
-    if snapshot.status is not SubscriptionStatus.ACTIVE:
-        raise BillingReconciliationConflictError(conflict_code="canceled_snapshot_not_supported")
-
-    if snapshot.cancel_at_period_end:
-        raise BillingReconciliationConflictError(
-            conflict_code=("scheduled_cancellation_not_supported")
+    if snapshot.status is SubscriptionStatus.ACTIVE:
+        return _reconcile_active_snapshot(
+            subscription=subscription,
+            snapshot=snapshot,
+            previous_provider_state_version=(previous_provider_state_version),
         )
 
+    if snapshot.status is SubscriptionStatus.CANCELED:
+        return _reconcile_canceled_snapshot(
+            subscription=subscription,
+            snapshot=snapshot,
+            previous_provider_state_version=(previous_provider_state_version),
+        )
+
+    raise BillingReconciliationInvalidSnapshotError(
+        internal_message=(
+            "The provider snapshot status is not supported by billing reconciliation."
+        )
+    )
+
+
+def _reconcile_active_snapshot(
+    *,
+    subscription: Subscription,
+    snapshot: BillingProviderSubscriptionSnapshot,
+    previous_provider_state_version: int,
+) -> ReconciledBillingSubscription:
     if subscription.status is SubscriptionStatus.CANCELED or subscription.canceled_at is not None:
         raise BillingReconciliationConflictError(conflict_code="reactivation_not_supported")
-
-    if subscription.cancel_at_period_end or subscription.cancellation_requested_at is not None:
-        raise BillingReconciliationConflictError(conflict_code="local_cancellation_pending")
 
     if subscription.status not in {
         SubscriptionStatus.PENDING,
@@ -411,22 +430,12 @@ def _reconcile_active_subscription(
         snapshot=snapshot,
     )
 
-    expected_pending_price_code = subscription.pending_price_code
-
-    if snapshot.price_code == subscription.price_code:
-        pass
-    elif (
-        subscription.pending_price_code is not None
-        and snapshot.price_code == subscription.pending_price_code
-    ):
-        expected_pending_price_code = None
-    else:
-        raise BillingReconciliationConflictError(conflict_code="unexpected_provider_price")
-
-    try:
-        price = get_price_definition(snapshot.price_code)
-    except UnsupportedPriceCodeError as error:
-        raise BillingReconciliationUnsupportedPriceError(price_code=snapshot.price_code) from error
+    expected_pending_price_code = _resolve_expected_pending_price_code(
+        subscription=subscription,
+        snapshot=snapshot,
+        clear_pending=(snapshot.cancel_at_period_end),
+    )
+    price = _resolve_snapshot_price(snapshot)
 
     expected_values: dict[str, object] = {
         "price_code": price.price_code,
@@ -438,11 +447,107 @@ def _reconcile_active_subscription(
         "status": SubscriptionStatus.ACTIVE,
         "current_period_start": (snapshot.current_period_start),
         "current_period_end": snapshot.current_period_end,
-        "cancel_at_period_end": False,
+        "cancel_at_period_end": (snapshot.cancel_at_period_end),
         "canceled_at": None,
         "provider_state_version": (snapshot.provider_state_version),
     }
 
+    return _compare_and_repair(
+        subscription=subscription,
+        snapshot=snapshot,
+        expected_values=expected_values,
+        previous_provider_state_version=(previous_provider_state_version),
+    )
+
+
+def _reconcile_canceled_snapshot(
+    *,
+    subscription: Subscription,
+    snapshot: BillingProviderSubscriptionSnapshot,
+    previous_provider_state_version: int,
+) -> ReconciledBillingSubscription:
+    if subscription.status not in {
+        SubscriptionStatus.PENDING,
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.PAST_DUE,
+        SubscriptionStatus.CANCELED,
+    }:
+        raise BillingReconciliationConflictError(
+            conflict_code="unsupported_local_subscription_status"
+        )
+
+    _validate_nonregressing_period(
+        subscription=subscription,
+        snapshot=snapshot,
+    )
+    _validate_scheduled_cancellation_boundary(
+        subscription=subscription,
+        snapshot=snapshot,
+    )
+    _resolve_expected_pending_price_code(
+        subscription=subscription,
+        snapshot=snapshot,
+        clear_pending=True,
+    )
+    price = _resolve_snapshot_price(snapshot)
+
+    expected_values: dict[str, object] = {
+        "price_code": price.price_code,
+        "plan": price.plan,
+        "billing_interval": price.billing_interval,
+        "currency": price.currency,
+        "unit_amount": price.unit_amount,
+        "pending_price_code": None,
+        "status": SubscriptionStatus.CANCELED,
+        "current_period_start": (snapshot.current_period_start),
+        "current_period_end": snapshot.current_period_end,
+        "cancel_at_period_end": False,
+        "canceled_at": snapshot.canceled_at,
+        "provider_state_version": (snapshot.provider_state_version),
+    }
+
+    return _compare_and_repair(
+        subscription=subscription,
+        snapshot=snapshot,
+        expected_values=expected_values,
+        previous_provider_state_version=(previous_provider_state_version),
+    )
+
+
+def _resolve_expected_pending_price_code(
+    *,
+    subscription: Subscription,
+    snapshot: BillingProviderSubscriptionSnapshot,
+    clear_pending: bool,
+) -> str | None:
+    if snapshot.price_code == subscription.price_code:
+        return None if clear_pending else subscription.pending_price_code
+
+    if (
+        subscription.pending_price_code is not None
+        and snapshot.price_code == subscription.pending_price_code
+    ):
+        return None
+
+    raise BillingReconciliationConflictError(conflict_code="unexpected_provider_price")
+
+
+def _resolve_snapshot_price(
+    snapshot: BillingProviderSubscriptionSnapshot,
+) -> PriceDefinition:
+    try:
+        return get_price_definition(snapshot.price_code)
+    except UnsupportedPriceCodeError as error:
+        raise BillingReconciliationUnsupportedPriceError(price_code=snapshot.price_code) from error
+
+
+def _compare_and_repair(
+    *,
+    subscription: Subscription,
+    snapshot: BillingProviderSubscriptionSnapshot,
+    expected_values: dict[str, object],
+    previous_provider_state_version: int,
+) -> ReconciledBillingSubscription:
     drift_fields = [
         field_name
         for field_name, expected_value in expected_values.items()
@@ -477,6 +582,26 @@ def _reconcile_active_subscription(
         previous_provider_state_version=(previous_provider_state_version),
         provider_state_version=(snapshot.provider_state_version),
     )
+
+
+def _validate_scheduled_cancellation_boundary(
+    *,
+    subscription: Subscription,
+    snapshot: BillingProviderSubscriptionSnapshot,
+) -> None:
+    if not subscription.cancel_at_period_end:
+        return
+
+    local_period_end = subscription.current_period_end
+
+    if (
+        local_period_end is None
+        or snapshot.current_period_end != local_period_end
+        or snapshot.canceled_at != local_period_end
+    ):
+        raise BillingReconciliationConflictError(
+            conflict_code=("scheduled_cancellation_boundary_mismatch")
+        )
 
 
 def _validate_snapshot_identity(

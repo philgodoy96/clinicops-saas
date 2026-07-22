@@ -538,22 +538,6 @@ def test_identity_change_during_provider_fetch_rolls_back() -> None:
             ),
             "provider_period_regression",
         ),
-        (
-            _snapshot(
-                provider_state_version=5,
-                status=SubscriptionStatus.CANCELED,
-                cancel_at_period_end=False,
-                canceled_at=PERIOD_END,
-            ),
-            "canceled_snapshot_not_supported",
-        ),
-        (
-            _snapshot(
-                provider_state_version=5,
-                cancel_at_period_end=True,
-            ),
-            "scheduled_cancellation_not_supported",
-        ),
     ],
 )
 def test_unsafe_active_drift_is_rejected(
