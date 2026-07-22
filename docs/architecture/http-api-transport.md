@@ -43,6 +43,12 @@ GET  /api/v1/auth/me
 POST /api/v1/auth/logout
 ```
 
+The implemented billing subscription-creation route is:
+
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
 A new API version can be introduced through a separate router without changing
 the internal application services.
 
@@ -56,9 +62,15 @@ It is responsible for:
 - configuring logging;
 - creating the FastAPI application;
 - storing settings on `application.state`;
+- storing the application-scoped fake payment provider on `application.state`;
 - registering exception handlers;
 - registering request-context middleware;
 - mounting the root API router.
+
+The application-scoped fake provider is resolved through request application
+state. A new provider instance must not be created per request because
+provider-side idempotency and ambiguous-outcome recovery depend on state
+surviving across requests within the process.
 
 The API package provides transport components, but it does not create a second
 application instance or application factory.
@@ -265,6 +277,39 @@ The route commits the transition and returns:
 Previously issued access tokens are subsequently rejected because protected
 requests validate the persisted session state.
 
+## Billing subscription creation
+
+```http
+POST /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
+Request body:
+
+```json
+{
+  "price_code": "starter_monthly"
+}
+```
+
+Required header:
+
+```text
+Idempotency-Key: <opaque client-generated key>
+```
+
+Successful response status codes:
+
+```text
+201 Created
+    -> first successful execution
+
+200 OK
+    -> successful idempotent replay
+```
+
+The response does not expose provider customer IDs, provider subscription IDs,
+provider operation keys, or provider request payloads.
+
 ## Transaction ownership
 
 Application services flush database changes but do not commit.
@@ -297,6 +342,56 @@ partial or unintended work.
 
 Read-only requests may open an implicit database transaction. Cleanup rolls that
 transaction back before closing the session.
+
+## Multi-Transaction Application Workflows
+
+Most existing write routes call a flush-only application service and then own
+one final `session.commit()`.
+
+Billing subscription creation is an intentional exception.
+
+Its application orchestrator owns multiple short commits because the workflow
+must guarantee:
+
+```text
+database reservation committed
+    -> provider call with no open database transaction
+    -> provider result applied in a later transaction
+```
+
+The route remains thin. It validates transport concerns, resolves
+authorization and dependencies, invokes the orchestrator, and maps the result
+to the public response.
+
+This exception does not change the default rule for ordinary domain services.
+
+## Billing Idempotency Header
+
+`Idempotency-Key` is required for billing mutation requests.
+
+The header value:
+
+- is client generated;
+- is opaque;
+- is trimmed;
+- must not be empty;
+- is limited to 255 characters;
+- is case-sensitive;
+- is separate from the internal provider operation key.
+
+Missing or invalid headers return:
+
+```text
+400 Bad Request
+application/problem+json
+```
+
+Reusing a key for a different billing command returns:
+
+```text
+409 Conflict
+application/problem+json
+```
 
 ## Problem Details
 
@@ -354,6 +449,25 @@ WWW-Authenticate: Bearer
 
 Framework headers such as `Allow` for `405 Method Not Allowed` are preserved.
 
+Billing subscription-creation failures map to:
+
+```text
+400
+    missing idempotency key
+    invalid idempotency key
+    unsupported price code
+
+409
+    subscription already exists
+    billing idempotency conflict
+    provider operation already in progress
+    terminal provider rejection
+
+503
+    retryable provider failure
+    ambiguous provider outcome
+```
+
 ## Request and correlation identifiers
 
 Every HTTP request receives:
@@ -392,6 +506,8 @@ The FastAPI application exposes:
 /docs
 ```
 
+OpenAPI remains the source of truth for the current HTTP contract.
+
 Protected operations declare an HTTP bearer security scheme.
 
 Request and response schemas are generated from Pydantic transport models.
@@ -400,6 +516,9 @@ Request and response schemas are generated from Pydantic transport models.
 
 Problem Details is the standard runtime error contract. Route-level OpenAPI
 response declarations may be expanded as the public API surface grows.
+
+This document does not claim that plan-change, cancellation, webhook, or job
+endpoints are implemented.
 
 ## Security decisions
 
@@ -443,13 +562,19 @@ The HTTP transport intentionally does not:
 
 - embed tenant authorization claims in JWTs;
 - accept caller-controlled tenant context during login;
-- commit inside application services;
+- commit inside ordinary application services;
 - auto-commit in the database dependency;
 - expose internal exception details;
 - expose refresh tokens through protected principal responses;
+- expose provider customer IDs, provider subscription IDs, provider operation
+  keys, or provider request payloads in billing responses;
 - allow logout to target arbitrary session IDs;
 - implement browser cookies before a browser client exists;
 - add tenant selection to global authentication routes.
+
+Billing subscription creation remains the documented multi-transaction
+exception to flush-only application services. That exception does not change
+the default rule for ordinary domain services.
 
 These boundaries keep identity establishment, session lifecycle, tenant
 authorization, and transport concerns explicit and independently testable.

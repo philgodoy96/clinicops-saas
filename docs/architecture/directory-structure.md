@@ -582,12 +582,26 @@ src/clinicops/billing/
 │   ├── fake.py
 │   ├── idempotency.py
 │   └── periods.py
-└── repositories/
+├── repositories/
+│   ├── __init__.py
+│   ├── billing_customer_repository.py
+│   ├── subscription_repository.py
+│   ├── provider_operation_repository.py
+│   └── billing_webhook_event_repository.py
+└── services/
     ├── __init__.py
-    ├── billing_customer_repository.py
-    ├── subscription_repository.py
-    ├── provider_operation_repository.py
-    └── billing_webhook_event_repository.py
+    └── create_subscription.py
+```
+
+The implemented HTTP composition for billing lives under the repository's
+versioned API package:
+
+```text
+src/clinicops/api/v1/billing/
+├── __init__.py
+├── dependencies.py
+├── routes.py
+└── schemas.py
 ```
 
 Responsibilities are separated by concrete architectural boundary:
@@ -638,6 +652,27 @@ providers/idempotency.py
 
 providers/periods.py
     -> calendar-accurate monthly and yearly period calculation
+
+billing/services/create_subscription.py
+    -> multi-transaction tenant subscription-creation orchestration
+    -> client idempotency replay
+    -> durable provider-operation reservation and claiming
+    -> provider calls outside database transactions
+    -> persistence of provider customer and subscription results
+
+api/v1/billing/dependencies.py
+    -> Idempotency-Key extraction and validation
+    -> BILLING_MANAGE authorization dependency
+    -> application-scoped PaymentProvider resolution
+    -> subscription service construction
+
+api/v1/billing/routes.py
+    -> tenant-scoped POST subscription route
+    -> 201 first execution and 200 successful replay
+
+api/v1/billing/schemas.py
+    -> public request and response models
+    -> exclusion of provider identifiers from the HTTP contract
 ```
 
 Billing currently uses one `models.py` file because the four mapped entities
@@ -667,24 +702,42 @@ Fake-provider controls remain outside the request contracts so production
 application code cannot depend on test-only failure flags.
 
 The provider package does not access SQLAlchemy sessions or billing
-repositories. Database transaction orchestration belongs to future billing
+repositories. Database transaction orchestration belongs to billing
 application services.
 
-The billing module now contains an implemented provider abstraction and fake
-adapter. It does not currently contain:
+The billing subscription service is an application orchestrator rather than a
+single-transaction domain service.
+
+It intentionally owns multiple commits because provider calls must occur
+without an open database transaction.
+
+The orchestrator reserves and claims durable provider operations, commits,
+calls the provider, and then reloads and locks persisted state before applying
+the result.
+
+The API package remains under `api/v1/` because this is the repository's
+implemented HTTP composition convention.
+
+The payment provider remains application-scoped because the deterministic
+fake adapter stores in-memory idempotency and ambiguous-outcome state across
+requests.
+
+The billing module now contains an implemented provider abstraction, fake
+adapter, subscription-creation service, and versioned HTTP composition. It
+does not currently contain:
 
 ```text
-api/
-services/
-jobs/
-workers/
+plan-change service and route
+cancellation service and route
+billing jobs
+billing workers
+webhook HTTP handlers
+real provider adapters
+entitlement enforcement
 ```
 
-Those directories are added only when the corresponding application,
+Those capabilities are added only when the corresponding application,
 transport, or background-processing responsibilities are implemented.
-
-Real provider adapters and webhook HTTP handlers are also not part of the
-current billing layout.
 
 Billing models are registered centrally through:
 
@@ -702,6 +755,8 @@ src/clinicops/billing/
 ```
 
 It does not introduce a parallel `modules/billing/` tree.
+
+It does not introduce a parallel `src/clinicops/billing/api/` tree.
 
 ---
 
