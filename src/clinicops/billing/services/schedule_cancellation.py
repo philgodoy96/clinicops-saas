@@ -168,6 +168,7 @@ class ScheduleBillingSubscriptionCancellationService:
         try:
             scheduled = self._apply_provider_result(
                 session=session,
+                command=command,
                 operation_id=operation_id,
                 result=provider_result,
             )
@@ -340,25 +341,29 @@ class ScheduleBillingSubscriptionCancellationService:
         self,
         *,
         session: Session,
+        command: ScheduleBillingSubscriptionCancellationCommand,
         operation_id: UUID,
         result: CancelSubscriptionResult,
     ) -> ScheduledBillingSubscriptionCancellation:
+        # Lock order must match _reserve_or_replay (subscription then
+        # operation) so a concurrent reserve cannot deadlock with apply.
+        subscription = self._subscription_repository.get_by_tenant_id_for_update(
+            session,
+            tenant_id=command.tenant_id,
+        )
+        if subscription is None:
+            raise RuntimeError("Reserved cancellation operation has no persisted subscription.")
+
         operation = self._require_operation_for_update(
             session,
             operation_id,
         )
         self._require_in_progress(operation)
 
-        subscription_id = _require_uuid(
-            operation.subscription_id,
-            field_name="subscription_id",
-        )
-        subscription = self._subscription_repository.get_by_id_for_update(
-            session,
-            subscription_id=subscription_id,
-        )
-        if subscription is None:
-            raise RuntimeError("Reserved cancellation operation has no persisted subscription.")
+        if operation.subscription_id != subscription.id:
+            raise RuntimeError(
+                "Reserved cancellation operation references another subscription."
+            )
 
         self._validate_subscription_for_cancellation(subscription)
         provider_subscription_id = _require_string(
