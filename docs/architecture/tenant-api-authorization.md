@@ -41,6 +41,7 @@ GET  /api/v1/tenants/{tenant_id}/invitations
 POST /api/v1/tenants/{tenant_id}/invitations
 POST /api/v1/tenants/{tenant_id}/invitations/{invitation_id}/revoke
 
+GET  /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription
 ```
 
@@ -191,6 +192,7 @@ Current route mapping:
 | List tenant invitations | `INVITATION_READ` |
 | Issue tenant invitation | `INVITATION_CREATE` |
 | Revoke tenant invitation | `INVITATION_REVOKE` |
+| Read billing subscription | `BILLING_READ` |
 | Create billing subscription | `BILLING_MANAGE` |
 
 The permission result is represented by:
@@ -450,6 +452,104 @@ ownership, and invitation lifecycle inside the transaction.
 
 The route commits only after successful revocation.
 
+## Billing permissions
+
+Billing capability is split into two tenant permissions:
+
+```text
+BILLING_READ
+    -> inspect the current local subscription state
+
+BILLING_MANAGE
+    -> execute billing mutations such as subscription creation
+```
+
+Future plan-change and cancellation mutations will also require
+`BILLING_MANAGE`.
+
+### Billing permission matrix
+
+```text
+OWNER
+    BILLING_READ: allowed
+    BILLING_MANAGE: allowed
+
+ADMIN
+    BILLING_READ: allowed
+    BILLING_MANAGE: denied
+
+STAFF
+    BILLING_READ: denied
+    BILLING_MANAGE: denied
+```
+
+## Billing subscription read
+
+```text
+GET /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
+Requires:
+
+```text
+TenantPermission.BILLING_READ
+```
+
+The route uses the existing tenant-context dependency and permission policy.
+
+It does not authorize through a direct `TenantRole` comparison in the route.
+
+### Authorization flow
+
+```text
+Bearer access token
+    -> resolve authenticated user and session
+    -> load tenant from path tenant_id
+    -> load current membership
+    -> validate tenant and membership state
+    -> require BILLING_READ
+    -> execute tenant-scoped subscription query
+```
+
+### Information disclosure
+
+Billing read authorization protects subscription data as follows:
+
+```text
+an authenticated user without membership does not receive billing data
+tenant membership is checked before the billing query
+a client cannot select another tenant through the request body
+the read endpoint has no request body
+provider identifiers are not exposed
+a valid membership without BILLING_READ receives 403
+a missing membership follows the existing 404 behavior
+```
+
+### Expected authorization outcomes
+
+```text
+tenant does not exist
+    -> 404
+
+authenticated user has no tenant membership
+    -> 404
+
+tenant is disabled
+    -> 403
+
+membership is disabled
+    -> 403
+
+membership lacks BILLING_READ
+    -> 403
+
+tenant is authorized but has no subscription
+    -> 404 billing_subscription_not_found
+
+authorized tenant has a subscription
+    -> 200
+```
+
 ## Billing subscription mutation
 
 ```text
@@ -465,22 +565,6 @@ TenantPermission.BILLING_MANAGE
 The route uses the existing tenant-context resolution and permission policy.
 
 It does not authorize through a direct role comparison in the route.
-
-### Billing permission matrix
-
-```text
-OWNER
-    billing read: allowed
-    billing manage: allowed
-
-ADMIN
-    billing read: allowed
-    billing manage: denied
-
-STAFF
-    billing read: denied
-    billing manage: denied
-```
 
 ### Trusted identity and tenant selection
 
@@ -516,16 +600,10 @@ membership lacks BILLING_MANAGE
     -> 403
 ```
 
-### Deferred billing routes
+### Deferred billing mutations
 
-Future billing read routes should use:
-
-```text
-TenantPermission.BILLING_READ
-```
-
-Plan changes and cancellations are still deferred even though their eventual
-mutations will also require `BILLING_MANAGE`.
+Plan changes and cancellations are still deferred. Their eventual mutations
+will also require `BILLING_MANAGE`.
 
 ## Authorization defense in depth
 
@@ -712,7 +790,6 @@ membership removal
 ownership transfer
 billing plan changes
 billing cancellations
-billing read routes
 patients
 professionals
 audit-log queries
@@ -726,8 +803,9 @@ transactional invariants, including protection of the tenant's single active
 owner.
 
 Subscription creation is the only billing mutation exposed through the current
-tenant API. Plan changes, cancellations, and billing reads remain deferred.
+tenant API. Billing subscription read is available to callers with
+`BILLING_READ`. Plan changes and cancellations remain deferred.
 
 Those remaining capabilities are addressed in subsequent milestones instead of
 being partially introduced into the current tenant read, invitation-
-administration, and subscription-creation boundary.
+administration, subscription-read, and subscription-creation boundary.

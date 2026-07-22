@@ -40,12 +40,18 @@ The implemented billing foundation now establishes:
 - successful API replay from the persisted `Subscription`;
 - retryable and terminal provider failure persistence;
 - ambiguous provider outcome recovery with the same provider operation key;
-- PostgreSQL integration and concurrency coverage.
+- PostgreSQL integration and concurrency coverage;
+- tenant-scoped billing subscription reads;
+- the persisted `Subscription` row as the read source of truth;
+- `BILLING_READ` authorization;
+- provider-independent public billing responses;
+- explicit not-found behavior for tenants without a subscription;
+- PostgreSQL-backed API integration coverage for tenant isolation.
 
 This document distinguishes the implemented domain, persistence,
-fake-provider, and subscription-creation workflow foundations from the
-webhook ingestion, entitlement, worker, plan-change, cancellation, and
-real-provider capabilities planned for later milestones.
+fake-provider, subscription-creation, and subscription-read workflow
+foundations from the webhook ingestion, entitlement, worker, plan-change,
+cancellation, and real-provider capabilities planned for later milestones.
 
 ## Module Ownership
 
@@ -82,7 +88,9 @@ The billing module currently owns:
 - fake-provider thread safety;
 - tenant-scoped subscription-creation application orchestration;
 - FastAPI billing subscription-creation routes;
+- FastAPI billing subscription-read routes;
 - `BILLING_MANAGE` authorization for billing mutations;
+- `BILLING_READ` authorization for billing reads;
 - required client `Idempotency-Key` extraction and validation at the HTTP
   boundary;
 - durable `CREATE_CUSTOMER` and `CREATE_SUBSCRIPTION` reservation and claim
@@ -1297,6 +1305,149 @@ The current authorization policy grants billing management to tenant owners.
 Administrators have billing read access only, and staff members do not receive
 billing administration permissions.
 
+## Implemented Subscription Read API
+
+ClinicOps exposes the current persisted billing subscription for an authorized
+tenant:
+
+```text
+GET /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
+The endpoint returns:
+
+```text
+200 OK
+application/json
+```
+
+The response contains:
+
+- subscription ID;
+- tenant ID;
+- public price code;
+- plan;
+- billing interval;
+- currency;
+- unit amount;
+- subscription status;
+- current billing-period boundaries;
+- cancellation scheduling state;
+- pending price-code state;
+- creation and update timestamps.
+
+The public response does not contain:
+
+- provider customer IDs;
+- provider subscription IDs;
+- provider references;
+- provider operation IDs;
+- client idempotency keys;
+- internal failure information;
+- provider credentials.
+
+The read route does not require an `Idempotency-Key` because it does not
+mutate billing state.
+
+## Subscription Read Source of Truth
+
+The local `Subscription` row is the source of truth for the read API.
+
+The request path is:
+
+```text
+HTTP route
+    -> authorized tenant context
+    -> GetBillingSubscriptionService
+    -> SubscriptionRepository.get_by_tenant_id
+    -> BillingSubscriptionResponse
+```
+
+The read workflow does not consult:
+
+- `FakePaymentProvider` in-memory state;
+- external payment-provider APIs;
+- `ProviderOperation.result_payload`;
+- billing webhook events;
+- background-job state.
+
+This keeps the public API independent from a specific provider adapter and
+prevents external provider latency from affecting a local billing read.
+
+The query uses the tenant-scoped subscription lookup without:
+
+- database writes;
+- `flush`;
+- `commit`;
+- `rollback`;
+- `SELECT FOR UPDATE`;
+- provider calls;
+- clock access.
+
+## Subscription Read Authorization
+
+The endpoint requires:
+
+```text
+TenantPermission.BILLING_READ
+```
+
+The current policy grants:
+
+```text
+OWNER
+    -> billing read allowed
+
+ADMIN
+    -> billing read allowed
+
+STAFF
+    -> billing read denied
+```
+
+The route relies on the existing persisted tenant-context resolution.
+
+The access token identifies the authenticated user and session, but it does
+not carry tenant billing authority.
+
+The tenant ID comes from the path and is evaluated against the authenticated
+user's current membership.
+
+## Missing Subscription Behavior
+
+A tenant without a persisted subscription receives:
+
+```text
+404 Not Found
+application/problem+json
+```
+
+Stable application error code:
+
+```text
+billing_subscription_not_found
+```
+
+The API returns an explicit not-found response rather than:
+
+- `null`;
+- an empty object;
+- a synthetic free subscription;
+- provider state;
+- a placeholder subscription.
+
+This preserves a clear distinction between:
+
+```text
+tenant has no subscription lifecycle
+```
+
+and:
+
+```text
+tenant has a persisted subscription in a specific state
+```
+
 ## Durable Workflow Decomposition
 
 A single client subscription request may create two durable outbound
@@ -1555,17 +1706,19 @@ Implemented tenant billing routes currently provide:
 
 ```text
 create subscription
+read subscription
 ```
 
 Future tenant billing routes are expected to provide:
 
 ```text
-read subscription
 schedule price change
 schedule period-end cancellation
 ```
 
 Mutation routes require an `Idempotency-Key`.
+
+Read routes do not require an `Idempotency-Key`.
 
 The authorization model is:
 
@@ -1685,7 +1838,16 @@ Coverage includes:
 - independent PostgreSQL sessions per concurrent thread;
 - concurrent same-key requests;
 - concurrent different-key requests;
-- scoped cleanup by test-owned tenant IDs.
+- scoped cleanup by test-owned tenant IDs;
+- persisted subscription API reads;
+- exact public subscription fields;
+- provider identifier exclusion;
+- reads without an `Idempotency-Key`;
+- tenant-scoped repository lookup;
+- cross-tenant isolation;
+- missing-subscription Problem Details;
+- exact `billing_subscription_not_found` error code;
+- PostgreSQL-backed HTTP integration coverage.
 
 Migration parity is checked through:
 
@@ -1823,20 +1985,42 @@ The domain foundation establishes these invariants:
 47. The workflow provides at-least-once attempts with idempotent boundaries,
     not exactly-once execution.
 
+48. Billing subscription reads require an authorized tenant context with
+    `BILLING_READ`.
+
+49. The subscription read endpoint is tenant-scoped by the path tenant ID.
+
+50. The persisted `Subscription` row is the read source of truth.
+
+51. Subscription reads do not call the payment provider.
+
+52. Subscription reads do not acquire row locks or mutate persistence.
+
+53. Provider identifiers are excluded from the public billing response.
+
+54. A tenant without a subscription receives an explicit not-found error.
+
+55. Billing reads do not require an idempotency key.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
-- plan-change application service and API;
-- subscription cancellation application service and API;
+- subscription history;
+- invoice history;
+- payment history;
+- plan-change orchestration and API;
+- cancellation orchestration and API;
+- provider reconciliation;
+- webhook ingestion and processing;
+- background jobs;
+- entitlement enforcement;
+- real provider adapters;
+- live provider lookup during billing reads;
 - stale in-progress recovery;
 - scheduled retries;
 - background provider execution;
-- webhook ingestion;
 - webhook HMAC verification;
-- webhook business processing;
-- entitlement enforcement;
-- real provider adapters;
 - payment credentials;
 - refunds;
 - proration;
@@ -1845,7 +2029,6 @@ The following capabilities are intentionally deferred:
 - payment-method collection;
 - hosted checkout;
 - credit-card processing;
-- invoices;
 - taxes;
 - coupons;
 - trials;
@@ -1856,10 +2039,10 @@ The following capabilities are intentionally deferred:
 - multiple subscriptions per tenant;
 - multiple currencies;
 - subscription reactivation;
-- reconciliation jobs;
 - production notification delivery.
 
 These capabilities are not required to establish the current domain,
-persistence, fake-provider, and subscription-creation workflow foundations.
-They will be added only when their data ownership, transaction, security,
-failure, and testing boundaries are implemented explicitly.
+persistence, fake-provider, subscription-creation, and subscription-read
+workflow foundations. They will be added only when their data ownership,
+transaction, security, failure, and testing boundaries are implemented
+explicitly.
