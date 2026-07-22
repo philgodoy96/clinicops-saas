@@ -15,7 +15,10 @@ from clinicops.billing.exceptions import (
     BillingWebhookEventRetryableFailureError,
     BillingWebhookEventTerminalFailureError,
 )
-from clinicops.billing.models import BillingWebhookEvent
+from clinicops.billing.models import (
+    BillingWebhookEvent,
+    Subscription,
+)
 from clinicops.billing.repositories import (
     BillingWebhookEventRepository,
     SubscriptionRepository,
@@ -23,6 +26,7 @@ from clinicops.billing.repositories import (
 from clinicops.billing.webhooks.handlers import (
     BillingWebhookHandlerResult,
     BillingWebhookTerminalProcessingError,
+    apply_billing_cancellation_event,
     apply_billing_renewal_event,
 )
 from clinicops.core.clock import Clock, SystemClock
@@ -307,20 +311,10 @@ class ProcessBillingWebhookEventService:
                 failure_code=("billing_webhook_subscription_not_found")
             )
 
-        if claim.event_type is not BillingWebhookEventType.SUBSCRIPTION_RENEWED:
-            self._persist_retryable_failure(
-                session=session,
-                event=event,
-                failure_code="handler_not_registered",
-                failure_message=(
-                    "No processing handler is registered for the persisted webhook event type."
-                ),
-            )
-            raise BillingWebhookEventRetryableFailureError(failure_code="handler_not_registered")
-
         try:
-            handler_result = apply_billing_renewal_event(
+            handler_result = _apply_event(
                 event=event,
+                event_type=claim.event_type,
                 subscription=subscription,
             )
         except BillingWebhookTerminalProcessingError as error:
@@ -429,6 +423,27 @@ class ProcessBillingWebhookEventService:
 
         self._webhook_event_repository.flush(session)
         session.commit()
+
+
+def _apply_event(
+    *,
+    event: BillingWebhookEvent,
+    event_type: BillingWebhookEventType,
+    subscription: Subscription,
+) -> BillingWebhookHandlerResult:
+    if event_type is BillingWebhookEventType.SUBSCRIPTION_RENEWED:
+        return apply_billing_renewal_event(
+            event=event,
+            subscription=subscription,
+        )
+
+    if event_type is BillingWebhookEventType.SUBSCRIPTION_CANCELED:
+        return apply_billing_cancellation_event(
+            event=event,
+            subscription=subscription,
+        )
+
+    raise RuntimeError("No billing webhook processing handler is registered for the event type.")
 
 
 def _resolve_event_type(
