@@ -15,6 +15,9 @@ from clinicops.billing.providers.base import PaymentProvider
 from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionService,
 )
+from clinicops.billing.services.get_subscription import (
+    GetBillingSubscriptionService,
+)
 
 IdempotencyKeyHeader = Annotated[
     str | None,
@@ -63,12 +66,23 @@ def get_create_billing_subscription_service(
     )
 
 
+def get_billing_subscription_query_service() -> GetBillingSubscriptionService:
+    """Build the tenant billing subscription query service."""
+
+    return GetBillingSubscriptionService()
+
+
+get_billing_read_tenant_context = require_tenant_permission(TenantPermission.BILLING_READ)
 get_billing_manage_tenant_context = require_tenant_permission(TenantPermission.BILLING_MANAGE)
 
 
 BillingIdempotencyKeyDependency = Annotated[
     str,
     Depends(get_billing_idempotency_key),
+]
+BillingReadTenantContextDependency = Annotated[
+    AuthorizedTenantContext,
+    Depends(get_billing_read_tenant_context),
 ]
 BillingManageTenantContextDependency = Annotated[
     AuthorizedTenantContext,
@@ -77,4 +91,8 @@ BillingManageTenantContextDependency = Annotated[
 CreateBillingSubscriptionServiceDependency = Annotated[
     CreateBillingSubscriptionService,
     Depends(get_create_billing_subscription_service),
+]
+GetBillingSubscriptionServiceDependency = Annotated[
+    GetBillingSubscriptionService,
+    Depends(get_billing_subscription_query_service),
 ]

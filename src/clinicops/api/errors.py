@@ -34,6 +34,7 @@ from clinicops.billing.exceptions import (
     BillingCustomerAlreadyExistsError,
     BillingIdempotencyConflictError,
     BillingSubscriptionAlreadyExistsError,
+    BillingSubscriptionNotFoundError,
     InvalidIdempotencyKeyError,
     MissingIdempotencyKeyError,
     ProviderOperationAlreadyExistsError,
@@ -229,6 +230,8 @@ BILLING_BAD_REQUEST_ERRORS = (
     UnsupportedPriceCodeError,
 )
 
+BILLING_NOT_FOUND_ERRORS = (BillingSubscriptionNotFoundError,)
+
 BILLING_CONFLICT_ERRORS = (
     BillingCustomerAlreadyExistsError,
     BillingSubscriptionAlreadyExistsError,
@@ -416,6 +419,13 @@ def _application_problem(
         return (
             status.HTTP_400_BAD_REQUEST,
             "Application request failed",
+            None,
+        )
+
+    if isinstance(exception, BILLING_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
             None,
         )
 
