@@ -43,10 +43,24 @@ GET  /api/v1/auth/me
 POST /api/v1/auth/logout
 ```
 
-The implemented billing subscription-creation route is:
+The implemented billing subscription routes are:
 
 ```text
+GET  /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription
+```
+
+```text
+GET
+    -> requires BILLING_READ
+    -> no Idempotency-Key
+    -> returns 200
+
+POST
+    -> requires BILLING_MANAGE
+    -> requires Idempotency-Key
+    -> returns 201 on first success
+    -> returns 200 on successful replay
 ```
 
 A new API version can be introduced through a separate router without changing
@@ -276,6 +290,95 @@ The route commits the transition and returns:
 
 Previously issued access tokens are subsequently rejected because protected
 requests validate the persisted session state.
+
+## Billing subscription read
+
+```http
+GET /api/v1/tenants/{tenant_id}/billing/subscription
+Authorization: Bearer <access-token>
+```
+
+The request has:
+
+- no body;
+- no query parameters;
+- no `Idempotency-Key`;
+- no provider identifier;
+- no client-controlled tenant ID outside the path.
+
+Successful response:
+
+```text
+200 OK
+application/json
+```
+
+Example:
+
+```json
+{
+  "id": "subscription-uuid",
+  "tenant_id": "tenant-uuid",
+  "price_code": "starter_monthly",
+  "plan": "starter",
+  "billing_interval": "monthly",
+  "currency": "USD",
+  "unit_amount": 4900,
+  "status": "active",
+  "current_period_start": "2026-07-22T12:00:00Z",
+  "current_period_end": "2026-08-22T12:00:00Z",
+  "cancel_at_period_end": false,
+  "cancellation_requested_at": null,
+  "canceled_at": null,
+  "pending_price_code": null,
+  "created_at": "2026-07-22T12:00:00Z",
+  "updated_at": "2026-07-22T12:00:00Z"
+}
+```
+
+The local `Subscription` row is the read source of truth.
+
+The route does not perform a live provider lookup.
+
+When authorization succeeds but no persisted subscription exists for the
+tenant:
+
+```text
+404 Not Found
+application/problem+json
+```
+
+Stable code:
+
+```text
+billing_subscription_not_found
+```
+
+Tenant and membership authorization errors remain governed by the existing
+tenant-context behavior.
+
+## Billing Subscription Read Transport
+
+The GET route is a read-only transport boundary.
+
+It:
+
+- resolves the authenticated principal;
+- resolves the tenant context from `{tenant_id}`;
+- requires `BILLING_READ`;
+- invokes `GetBillingSubscriptionService`;
+- maps `BillingSubscriptionDetails` to
+  `BillingSubscriptionResponse`;
+- returns the persisted local subscription state.
+
+It does not:
+
+- commit or roll back a database transaction;
+- acquire a row lock;
+- call the payment provider;
+- require an idempotency key;
+- expose provider identifiers;
+- return provider operation payloads.
 
 ## Billing subscription creation
 
@@ -517,8 +620,15 @@ Request and response schemas are generated from Pydantic transport models.
 Problem Details is the standard runtime error contract. Route-level OpenAPI
 response declarations may be expanded as the public API surface grows.
 
-This document does not claim that plan-change, cancellation, webhook, or job
-endpoints are implemented.
+This document does not claim that these endpoints are implemented:
+
+- plan change;
+- cancellation;
+- invoices;
+- payment history;
+- webhooks;
+- reconciliation;
+- entitlements.
 
 ## Security decisions
 
