@@ -361,9 +361,7 @@ class ScheduleBillingSubscriptionCancellationService:
         self._require_in_progress(operation)
 
         if operation.subscription_id != subscription.id:
-            raise RuntimeError(
-                "Reserved cancellation operation references another subscription."
-            )
+            raise RuntimeError("Reserved cancellation operation references another subscription.")
 
         self._validate_subscription_for_cancellation(subscription)
         provider_subscription_id = _require_string(
