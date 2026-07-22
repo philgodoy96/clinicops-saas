@@ -62,6 +62,16 @@ class SubscriptionRepository:
 
         return session.scalar(statement)
 
+    def get_by_id(
+        self,
+        session: Session,
+        *,
+        subscription_id: UUID,
+    ) -> Subscription | None:
+        statement = select(Subscription).where(Subscription.id == subscription_id)
+
+        return session.scalar(statement)
+
     def get_by_id_for_update(
         self,
         session: Session,

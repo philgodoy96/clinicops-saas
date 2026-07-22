@@ -3,11 +3,13 @@
 from clinicops.billing.reconciliation import (
     BillingProviderSubscriptionSnapshot,
     ReconcileBillingSubscriptionCommand,
+    ReconcileBillingSubscriptionService,
     ReconciledBillingSubscription,
 )
 
 __all__ = [
     "BillingProviderSubscriptionSnapshot",
     "ReconcileBillingSubscriptionCommand",
+    "ReconcileBillingSubscriptionService",
     "ReconciledBillingSubscription",
 ]
