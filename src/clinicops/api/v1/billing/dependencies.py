@@ -18,6 +18,9 @@ from clinicops.billing.services.create_subscription import (
 from clinicops.billing.services.get_subscription import (
     GetBillingSubscriptionService,
 )
+from clinicops.billing.services.schedule_plan_change import (
+    ScheduleBillingPlanChangeService,
+)
 
 IdempotencyKeyHeader = Annotated[
     str | None,
@@ -72,6 +75,19 @@ def get_billing_subscription_query_service() -> GetBillingSubscriptionService:
     return GetBillingSubscriptionService()
 
 
+def get_schedule_billing_plan_change_service(
+    payment_provider: Annotated[
+        PaymentProvider,
+        Depends(get_payment_provider),
+    ],
+) -> ScheduleBillingPlanChangeService:
+    """Build the scheduled plan-change orchestrator."""
+
+    return ScheduleBillingPlanChangeService(
+        payment_provider=payment_provider,
+    )
+
+
 get_billing_read_tenant_context = require_tenant_permission(TenantPermission.BILLING_READ)
 get_billing_manage_tenant_context = require_tenant_permission(TenantPermission.BILLING_MANAGE)
 
@@ -95,4 +111,8 @@ CreateBillingSubscriptionServiceDependency = Annotated[
 GetBillingSubscriptionServiceDependency = Annotated[
     GetBillingSubscriptionService,
     Depends(get_billing_subscription_query_service),
+]
+ScheduleBillingPlanChangeServiceDependency = Annotated[
+    ScheduleBillingPlanChangeService,
+    Depends(get_schedule_billing_plan_change_service),
 ]

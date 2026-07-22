@@ -11,10 +11,12 @@ from clinicops.api.v1.billing.dependencies import (
     BillingReadTenantContextDependency,
     CreateBillingSubscriptionServiceDependency,
     GetBillingSubscriptionServiceDependency,
+    ScheduleBillingPlanChangeServiceDependency,
 )
 from clinicops.api.v1.billing.schemas import (
     BillingSubscriptionResponse,
     CreateBillingSubscriptionRequest,
+    ScheduleBillingPlanChangeRequest,
 )
 from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionCommand,
@@ -23,6 +25,10 @@ from clinicops.billing.services.create_subscription import (
 from clinicops.billing.services.get_subscription import (
     BillingSubscriptionDetails,
     GetBillingSubscriptionQuery,
+)
+from clinicops.billing.services.schedule_plan_change import (
+    ScheduleBillingPlanChangeCommand,
+    ScheduledBillingPlanChange,
 )
 
 router = APIRouter(
@@ -86,8 +92,36 @@ def create_billing_subscription(
     return _to_response(result)
 
 
+@router.post(
+    "/{tenant_id}/billing/subscription/plan-change",
+    response_model=BillingSubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Schedule tenant billing plan change",
+)
+def schedule_billing_plan_change(
+    tenant_id: UUID,
+    payload: ScheduleBillingPlanChangeRequest,
+    session: DatabaseSessionDependency,
+    _tenant_context: BillingManageTenantContextDependency,
+    idempotency_key: BillingIdempotencyKeyDependency,
+    service: ScheduleBillingPlanChangeServiceDependency,
+) -> BillingSubscriptionResponse:
+    """Schedule or replay a period-end billing plan change."""
+
+    result = service.execute(
+        session,
+        ScheduleBillingPlanChangeCommand(
+            tenant_id=tenant_id,
+            target_price_code=payload.price_code,
+            idempotency_key=idempotency_key,
+        ),
+    )
+
+    return _to_response(result)
+
+
 def _to_response(
-    result: (BillingSubscriptionDetails | CreatedBillingSubscription),
+    result: (BillingSubscriptionDetails | CreatedBillingSubscription | ScheduledBillingPlanChange),
 ) -> BillingSubscriptionResponse:
     return BillingSubscriptionResponse(
         id=result.id,
