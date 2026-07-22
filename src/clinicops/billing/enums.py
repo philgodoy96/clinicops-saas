@@ -65,3 +65,10 @@ class BillingWebhookEventStatus(StrEnum):
     IGNORED = "ignored"
     FAILED_RETRYABLE = "failed_retryable"
     FAILED_TERMINAL = "failed_terminal"
+
+
+class BillingWebhookProcessingOutcome(StrEnum):
+    """Successful application outcomes for persisted webhook events."""
+
+    APPLIED = "applied"
+    IGNORED = "ignored"
