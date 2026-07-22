@@ -8,6 +8,8 @@ from clinicops.billing.webhooks.ingest import (
     IngestedBillingWebhook,
 )
 from clinicops.billing.webhooks.process import (
+    BillingWebhookEventClaim,
+    ClaimBillingWebhookEventService,
     ProcessBillingWebhookEventCommand,
     ProcessedBillingWebhookEvent,
 )
@@ -23,9 +25,11 @@ from clinicops.billing.webhooks.signatures import (
 __all__ = [
     "DEFAULT_BILLING_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS",
     "MAX_BILLING_WEBHOOK_PAYLOAD_BYTES",
+    "BillingWebhookEventClaim",
     "BillingWebhookEventEnvelope",
     "BillingWebhookSignature",
     "BillingWebhookSubscriptionData",
+    "ClaimBillingWebhookEventService",
     "IngestBillingWebhookCommand",
     "IngestBillingWebhookService",
     "IngestedBillingWebhook",
