@@ -9,10 +9,11 @@ from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
     BillingProvider,
+    BillingWebhookEventStatus,
+    BillingWebhookEventType,
     ProviderOperationStatus,
     ProviderOperationType,
     SubscriptionStatus,
-    WebhookEventStatus,
 )
 from clinicops.billing.exceptions import (
     BillingCustomerAlreadyExistsError,
@@ -110,14 +111,38 @@ def _new_event(
     *,
     provider_event_id: str,
 ) -> BillingWebhookEvent:
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
+
     return BillingWebhookEvent(
         provider=BillingProvider.FAKE,
         provider_event_id=provider_event_id,
-        event_type="subscription.created",
+        event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+        provider_subscription_id=(provider_subscription_id),
+        provider_created_at=provider_created_at,
         provider_state_version=1,
         payload={
-            "provider_subscription_id": f"sub_{uuid4().hex}",
+            "id": provider_event_id,
+            "type": (BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            "created_at": (provider_created_at.isoformat()),
+            "data": {
+                "provider_subscription_id": (provider_subscription_id),
+                "provider_state_version": 1,
+                "price_code": "starter_monthly",
+                "status": "active",
+                "current_period_start": ("2026-08-22T12:00:00+00:00"),
+                "current_period_end": ("2026-09-22T12:00:00+00:00"),
+                "canceled_at": None,
+            },
         },
+        payload_sha256="a" * 64,
+        signature_timestamp=int(provider_created_at.timestamp()),
     )
 
 
@@ -494,7 +519,8 @@ def test_webhook_event_repository_flushes_processing_updates(
     )
     processed_at = datetime(2026, 7, 21, tzinfo=UTC)
 
-    event.status = WebhookEventStatus.PROCESSED
+    event.status = BillingWebhookEventStatus.PROCESSED
+    event.processing_attempt_count = 1
     event.processed_at = processed_at
     repository.flush(db_session)
 
@@ -504,7 +530,8 @@ def test_webhook_event_repository_flushes_processing_updates(
     )
 
     assert locked is not None
-    assert locked.status is WebhookEventStatus.PROCESSED
+    assert locked.status is BillingWebhookEventStatus.PROCESSED
+    assert locked.processing_attempt_count == 1
     assert locked.processed_at == processed_at
 
 

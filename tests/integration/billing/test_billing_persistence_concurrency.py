@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from threading import Barrier
 from uuid import UUID, uuid4
 
@@ -13,6 +14,7 @@ from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
     BillingProvider,
+    BillingWebhookEventType,
     ProviderOperationType,
     SubscriptionStatus,
 )
@@ -277,6 +279,14 @@ def test_concurrent_provider_operations_preserve_idempotency_scope() -> None:
 def test_concurrent_webhook_delivery_preserves_event_uniqueness() -> None:
     provider_event_id = f"evt_{uuid4().hex}"
     barrier = Barrier(2)
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
 
     def create_event() -> str:
         with Session(get_engine()) as session:
@@ -289,11 +299,26 @@ def test_concurrent_webhook_delivery_preserves_event_uniqueness() -> None:
                     BillingWebhookEvent(
                         provider=BillingProvider.FAKE,
                         provider_event_id=provider_event_id,
-                        event_type="subscription.updated",
+                        event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+                        provider_subscription_id=(provider_subscription_id),
+                        provider_created_at=provider_created_at,
                         provider_state_version=1,
                         payload={
-                            "provider_subscription_id": (f"sub_{uuid4().hex}"),
+                            "id": provider_event_id,
+                            "type": (BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+                            "created_at": (provider_created_at.isoformat()),
+                            "data": {
+                                "provider_subscription_id": (provider_subscription_id),
+                                "provider_state_version": 1,
+                                "price_code": "starter_monthly",
+                                "status": "active",
+                                "current_period_start": ("2026-08-22T12:00:00+00:00"),
+                                "current_period_end": ("2026-09-22T12:00:00+00:00"),
+                                "canceled_at": None,
+                            },
                         },
+                        payload_sha256="d" * 64,
+                        signature_timestamp=int(provider_created_at.timestamp()),
                     ),
                 )
                 session.commit()

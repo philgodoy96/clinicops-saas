@@ -49,16 +49,6 @@ class ProviderOperationStatus(StrEnum):
     FAILED_TERMINAL = "failed_terminal"
 
 
-class WebhookEventStatus(StrEnum):
-    """Durable billing webhook-event lifecycle states."""
-
-    RECEIVED = "received"
-    PROCESSED = "processed"
-    IGNORED = "ignored"
-    FAILED_RETRYABLE = "failed_retryable"
-    FAILED_TERMINAL = "failed_terminal"
-
-
 class BillingWebhookEventType(StrEnum):
     """Provider billing lifecycle events accepted by ingestion."""
 
@@ -72,5 +62,6 @@ class BillingWebhookEventStatus(StrEnum):
     RECEIVED = "received"
     PROCESSING = "processing"
     PROCESSED = "processed"
+    IGNORED = "ignored"
     FAILED_RETRYABLE = "failed_retryable"
     FAILED_TERMINAL = "failed_terminal"
