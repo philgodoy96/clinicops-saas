@@ -195,6 +195,97 @@ def test_ambiguous_success_still_protects_request_identity() -> None:
         )
 
 
+def test_retryable_plan_change_can_be_retried_with_same_key() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = ChangePlanRequest(
+        provider_operation_key=CHANGE_PLAN_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        target_price_code="professional_monthly",
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=ProviderOperationType.CHANGE_PLAN,
+        outcome=FakeProviderOutcome.RETRYABLE_FAILURE,
+    )
+
+    with pytest.raises(ProviderRetryableError):
+        provider.change_plan(request)
+
+    recovered = provider.change_plan(request)
+
+    assert recovered.provider_state_version == 2
+    assert recovered.effective_price_code == ("professional_monthly")
+
+
+def test_ambiguous_plan_change_replays_without_second_mutation() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = ChangePlanRequest(
+        provider_operation_key=CHANGE_PLAN_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        target_price_code="professional_monthly",
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=ProviderOperationType.CHANGE_PLAN,
+        outcome=FakeProviderOutcome.AMBIGUOUS_SUCCESS,
+    )
+
+    with pytest.raises(ProviderAmbiguousOutcomeError):
+        provider.change_plan(request)
+
+    recovered = provider.change_plan(request)
+
+    assert recovered.provider_state_version == 2
+    assert recovered.effective_price_code == ("professional_monthly")
+
+
+def test_terminal_plan_change_rejection_is_replayed() -> None:
+    provider, control = _provider_with_control()
+    provider_customer_id = _create_customer(provider)
+    created = provider.create_subscription(
+        CreateSubscriptionRequest(
+            provider_operation_key=CREATE_SUBSCRIPTION_KEY,
+            provider_customer_id=provider_customer_id,
+            price_code="starter_monthly",
+            effective_at=PERIOD_START,
+        )
+    )
+    request = ChangePlanRequest(
+        provider_operation_key=CHANGE_PLAN_KEY,
+        provider_subscription_id=(created.provider_subscription_id),
+        target_price_code="professional_monthly",
+        effective_at=created.current_period_end,
+    )
+    control.queue_outcome(
+        operation_type=ProviderOperationType.CHANGE_PLAN,
+        outcome=FakeProviderOutcome.TERMINAL_REJECTION,
+    )
+
+    with pytest.raises(ProviderTerminalError):
+        provider.change_plan(request)
+
+    with pytest.raises(ProviderTerminalError):
+        provider.change_plan(request)
+
+
 def test_scripted_outcomes_are_scoped_by_operation_type() -> None:
     provider, control = _provider_with_control()
     control.queue_outcome(
