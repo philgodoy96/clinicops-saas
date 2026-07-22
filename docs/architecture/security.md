@@ -509,6 +509,334 @@ only when:
 
 `cancellation_requested_at` is preserved as an audit fact.
 
+## Billing Reconciliation Trust Boundary
+
+Billing reconciliation reads current subscription state from a payment
+provider and may repair local billing state.
+
+A provider response is authoritative for provider-owned facts, but it is not
+allowed to bypass local ownership, catalog, lifecycle, or concurrency
+invariants.
+
+The reconciliation boundary validates:
+
+- trusted local subscription identity;
+- configured provider identity;
+- provider subscription identity;
+- provider snapshot contract;
+- provider state version;
+- provider lifecycle consistency;
+- billing-period consistency;
+- provider price relationship;
+- local catalog support;
+- scheduled cancellation boundaries;
+- local state after row locking.
+
+## Reconciliation Command Boundary
+
+The reconciliation command accepts only:
+
+```text
+subscription_id
+```
+
+It does not accept:
+
+- tenant ID from the provider;
+- provider name from an API caller;
+- provider subscription ID from an API caller;
+- arbitrary provider URLs;
+- provider credentials;
+- raw provider payloads;
+- local billing customer IDs;
+- target price amounts;
+- lifecycle overrides.
+
+The local subscription record resolves the provider identity.
+
+This prevents a caller or provider payload from selecting another tenant's
+subscription.
+
+## External Call Transaction Isolation
+
+The reconciliation service intentionally ends its initial database transaction
+before calling the provider.
+
+```text
+Transaction A
+    -> read local provider identity
+    -> commit
+
+External provider call
+    -> no row lock
+    -> no database transaction held
+
+Transaction B
+    -> reload and lock subscription
+    -> revalidate identity
+    -> compare and repair
+    -> commit
+```
+
+Security and reliability properties:
+
+- external latency does not extend a database row lock;
+- provider outages do not hold subscription locks;
+- database connections are not reserved while awaiting the provider;
+- the service cannot rely on stale pre-call local state;
+- identity and version are checked again before mutation.
+
+## Provider Identity Revalidation
+
+Before the external call, the service captures:
+
+```text
+subscription_id
+provider
+provider_subscription_id
+```
+
+The provider adapter must match the local provider.
+
+The returned snapshot must match:
+
+```text
+snapshot.provider
+snapshot.provider_subscription_id
+```
+
+After the provider call, the locked subscription must still match the captured
+identity.
+
+A mismatch produces:
+
+```text
+billing_reconciliation_provider_identity_mismatch
+```
+
+This protects against:
+
+- incorrect provider routing;
+- provider adapter defects;
+- stale subscription identity;
+- administrative identity changes during the external call;
+- accidental cross-subscription repair.
+
+## Provider Snapshot Validation
+
+The provider snapshot is a typed, immutable contract.
+
+Validation requires:
+
+- non-empty identifiers;
+- positive provider state version;
+- timezone-aware timestamps;
+- valid billing periods;
+- active lifecycle without `canceled_at`;
+- canceled lifecycle with `canceled_at`;
+- canceled lifecycle without pending cancellation;
+- cancellation timestamp inside the provider billing period.
+
+Malformed snapshots are rejected as:
+
+```text
+billing_reconciliation_invalid_snapshot
+```
+
+The service does not attempt to infer missing provider data.
+
+## Reconciliation Data Ownership
+
+The provider owns:
+
+- provider subscription identity;
+- provider state version;
+- provider price code;
+- lifecycle status;
+- provider billing period;
+- scheduled cancellation state;
+- final cancellation timestamp;
+- observation timestamp.
+
+ClinicOps owns:
+
+- local subscription identity;
+- tenant ownership;
+- billing customer ownership;
+- supported price catalog;
+- commercial price attributes;
+- local workflow state;
+- cancellation request audit history;
+- repair policy;
+- permissions and operational controls.
+
+The provider price code is treated only as an identifier.
+
+ClinicOps resolves:
+
+```text
+plan
+billing_interval
+currency
+unit_amount
+```
+
+from the local catalog.
+
+## Monotonic Reconciliation Protection
+
+The provider snapshot version is compared after locking the local
+subscription.
+
+```text
+snapshot version < local version
+    -> ignore snapshot
+
+snapshot version >= local version
+    -> validate and compare state
+```
+
+An older snapshot cannot:
+
+- reduce local provider state version;
+- reactivate a canceled subscription;
+- restore an obsolete billing period;
+- overwrite a newer webhook result;
+- clear a newer final cancellation.
+
+Provider timestamps are traceability data.
+
+They are not the primary ordering authority.
+
+## Reconciliation Price Safety
+
+Reconciliation accepts a provider price only when it matches:
+
+```text
+local price_code
+```
+
+or:
+
+```text
+local pending_price_code
+```
+
+An unrelated provider price is rejected as:
+
+```text
+unexpected_provider_price
+```
+
+Even a recognized catalog price is not adopted automatically when it is
+unrelated to the local workflow.
+
+This prevents reconciliation from silently converting an unexpected provider
+change into an authorized ClinicOps plan change.
+
+## Reconciliation Cancellation Safety
+
+Reconciliation may repair provider-authoritative cancellation, but it does not
+discard local audit history.
+
+```text
+cancellation_requested_at
+```
+
+is preserved.
+
+The service never invents a local request timestamp.
+
+When a local scheduled cancellation already exists, a final provider snapshot
+must confirm the same period boundary.
+
+A mismatch produces:
+
+```text
+scheduled_cancellation_boundary_mismatch
+```
+
+An active provider snapshot cannot automatically reactivate a local
+subscription that is already canceled.
+
+Reactivation remains a separate explicit workflow.
+
+## Reconciliation Concurrency Safety
+
+Reconciliation and webhook processing share the same local subscription lock.
+
+This establishes one serialization boundary for provider-driven state changes.
+
+Security and integrity properties:
+
+- concurrent reconciliations cannot apply independent conflicting repairs;
+- only one worker repairs a specific drift;
+- later workers observe repaired state;
+- reconciliation cannot overwrite a newer webhook-applied provider version;
+- stale snapshots are ignored after the lock is acquired;
+- local lifecycle state remains monotonic.
+
+## Reconciliation Failure Data
+
+Reconciliation errors use stable public classifications.
+
+Examples:
+
+```text
+billing_reconciliation_subscription_not_found
+billing_reconciliation_provider_state_not_found
+billing_reconciliation_provider_identity_mismatch
+billing_reconciliation_unsupported_price
+billing_reconciliation_invalid_snapshot
+billing_reconciliation_conflict
+```
+
+Internal conflict codes may include:
+
+```text
+provider_subscription_identity_missing
+invalid_local_provider_state_version
+reactivation_not_supported
+unsupported_local_subscription_status
+incomplete_local_billing_period
+provider_period_regression
+unexpected_provider_price
+scheduled_cancellation_boundary_mismatch
+```
+
+Public messages must not expose:
+
+- provider credentials;
+- full provider payloads;
+- database connection details;
+- unrelated tenant identifiers;
+- stack traces;
+- access tokens;
+- webhook secrets;
+- internal payment-provider URLs.
+
+Reconciliation is currently an internal application operation and has no
+public HTTP error surface.
+
+## Reconciliation Operational Access
+
+No public or administrative reconciliation endpoint is implemented.
+
+The service is prepared for controlled execution by future background-job or
+operator tooling.
+
+Future operational entry points must provide:
+
+- authenticated operator identity;
+- explicit authorization;
+- tenant-aware access controls;
+- correlation IDs;
+- audit logging;
+- rate limiting;
+- safe retry behavior;
+- observability for provider failures;
+- protections against repeated manual execution.
+
 ## Security Invariants
 
 - Webhook requests are authenticated before event parsing.
@@ -539,6 +867,24 @@ only when:
 - Terminal failures are not automatically retried.
 - Processing failure messages exclude secrets and raw payloads.
 - Processing is not exposed as a public API operation.
+- Reconciliation accepts only a trusted local subscription UUID.
+- Provider identity is resolved from the local database.
+- Provider calls occur without a database row lock.
+- Local identity is revalidated after the provider call.
+- Provider snapshots cannot select a local tenant or subscription.
+- Provider snapshots must satisfy the canonical snapshot contract.
+- Provider state ordering is checked while the subscription row is locked.
+- Older snapshots cannot overwrite newer local provider state.
+- Provider prices must match the current or pending local price.
+- Commercial price attributes come from the local catalog.
+- Reconciliation cannot automatically reactivate canceled subscriptions.
+- Cancellation request audit timestamps are preserved.
+- Reconciliation does not invent provider or local audit facts.
+- Scheduled cancellation boundaries must match before final repair.
+- Reconciliation and webhook processing share a row-lock serialization
+  boundary.
+- Reconciliation failure messages exclude secrets and raw provider payloads.
+- Reconciliation is not exposed as a public API operation.
 
 ## Intentionally Deferred Security Controls
 
@@ -565,9 +911,30 @@ processing boundary:
 - retry scheduling;
 - maximum retry attempts;
 - dead-letter workflows;
-- provider reconciliation;
-- provider API state verification;
 - structured security event alerts;
 - multi-provider processing policies;
 - entitlement propagation;
+- production worker isolation.
+
+The following operational controls build on the implemented internal
+reconciliation, identity, transaction, and concurrency boundaries but are not
+yet part of the current reconciliation boundary:
+
+- background reconciliation scheduling;
+- operator-triggered reconciliation;
+- administrative reconciliation endpoints;
+- operator RBAC;
+- reconciliation audit history;
+- persisted reconciliation attempts;
+- provider rate-limit coordination;
+- retry scheduling;
+- exponential backoff;
+- jitter;
+- dead-letter handling;
+- structured reconciliation alerts;
+- provider-state dashboards;
+- multi-provider reconciliation policy;
+- batch tenant reconciliation;
+- invoice and payment reconciliation;
+- entitlement correction;
 - production worker isolation.

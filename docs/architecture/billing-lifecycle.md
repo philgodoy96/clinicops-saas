@@ -93,13 +93,30 @@ The implemented billing foundation now establishes:
 - retryable and terminal failure persistence;
 - completed event replay;
 - PostgreSQL-backed processing concurrency coverage;
-- atomic subscription and event completion.
+- atomic subscription and event completion;
+- provider subscription snapshot lookup;
+- deterministic fake-provider state materialization;
+- single-subscription reconciliation;
+- external provider calls outside database transactions;
+- provider identity revalidation after provider calls;
+- subscription row locking before repair;
+- provider state-version ordering;
+- active subscription repair;
+- pending plan activation;
+- scheduled cancellation repair;
+- final cancellation repair;
+- provider-authoritative cancellation repair;
+- deterministic drift reporting;
+- in-sync and ignored outcomes;
+- PostgreSQL-backed reconciliation coverage;
+- reconciliation and webhook-processing concurrency coverage;
+- atomic local repair rollback.
 
 This document distinguishes the implemented domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
-plan-change, scheduled cancellation, webhook-ingestion, and webhook-
-processing workflow foundations from entitlement, worker, and real-provider
-capabilities planned for later milestones.
+plan-change, scheduled cancellation, webhook-ingestion, webhook-
+processing, and reconciliation workflow foundations from entitlement,
+worker, and real-provider capabilities planned for later milestones.
 
 ## Module Ownership
 
@@ -1505,6 +1522,623 @@ the greatest valid provider state version wins
 the subscription never regresses
 each event reaches processed or ignored
 ```
+
+## Implemented Billing Reconciliation
+
+Billing reconciliation is an internal application boundary that compares one
+local subscription with the current provider snapshot.
+
+The command is:
+
+```text
+ReconcileBillingSubscriptionCommand
+    subscription_id
+```
+
+The application service is:
+
+```text
+ReconcileBillingSubscriptionService
+```
+
+The result is:
+
+```text
+ReconciledBillingSubscription
+    subscription_id
+    provider
+    provider_subscription_id
+    outcome
+    drift_fields
+    previous_provider_state_version
+    provider_state_version
+```
+
+Implemented outcomes:
+
+```text
+in_sync
+repaired
+ignored
+```
+
+Meaning:
+
+```text
+in_sync
+    -> provider and local state already match
+    -> no database repair is required
+
+repaired
+    -> supported local drift was corrected
+
+ignored
+    -> provider snapshot is older than local state
+    -> no local mutation is allowed
+```
+
+Reconciliation failures remain application exceptions rather than successful
+outcomes.
+
+## Reconciliation Responsibility
+
+Reconciliation complements webhook processing.
+
+It does not replace webhook delivery or normal event processing.
+
+```text
+Webhook Processing
+    -> applies authenticated provider lifecycle events
+    -> preserves event-level idempotency
+    -> records event processing state
+
+Reconciliation
+    -> fetches current provider subscription state
+    -> compares provider and local state
+    -> repairs supported drift
+    -> protects against missed or incomplete event application
+```
+
+Typical reconciliation scenarios include:
+
+- a provider webhook was never delivered;
+- a webhook was durably ingested but not completed;
+- an external provider-side administrative change occurred;
+- local state was imported or repaired manually;
+- a provider lifecycle transition became effective without a local event;
+- an operational incident requires current-state recovery.
+
+## Provider Snapshot Contract
+
+The provider adapter exposes:
+
+```text
+get_subscription_snapshot(provider_subscription_id)
+```
+
+The canonical snapshot is:
+
+```text
+BillingProviderSubscriptionSnapshot
+    provider
+    provider_subscription_id
+    provider_state_version
+    price_code
+    status
+    current_period_start
+    current_period_end
+    cancel_at_period_end
+    canceled_at
+    observed_at
+```
+
+The snapshot contract validates:
+
+- non-empty provider identifiers;
+- positive provider state versions;
+- timezone-aware timestamps;
+- billing period end after billing period start;
+- active lifecycle consistency;
+- canceled lifecycle consistency;
+- cancellation timestamp inside the provider billing period.
+
+Supported provider lifecycle states:
+
+```text
+active
+canceled
+```
+
+Unsupported or malformed provider state is rejected rather than interpreted
+silently.
+
+## Fake Provider State Materialization
+
+The fake provider materializes scheduled state deterministically when its
+clock reaches the effective boundary.
+
+### Scheduled Plan Change
+
+Before the effective boundary:
+
+```text
+current price remains active
+pending provider price remains scheduled
+current provider period remains unchanged
+```
+
+At the effective boundary:
+
+```text
+pending price becomes active
+a new billing period is calculated
+pending provider state is cleared
+provider_state_version += 1
+```
+
+### Scheduled Cancellation
+
+Before the effective boundary:
+
+```text
+status = active
+cancel_at_period_end = true
+canceled_at = null
+```
+
+At the effective boundary:
+
+```text
+status = canceled
+cancel_at_period_end = false
+canceled_at = scheduled boundary
+provider_state_version += 1
+```
+
+Repeated snapshot reads at the same boundary are idempotent.
+
+A scheduled transition is materialized once.
+
+## Reconciliation Transaction Model
+
+Provider calls occur outside database transactions and row locks.
+
+```text
+Transaction A
+    -> read local Subscription identity
+    -> capture provider
+    -> capture provider_subscription_id
+    -> commit
+
+External boundary
+    -> fetch provider subscription snapshot
+    -> no database transaction is held
+
+Transaction B
+    -> reload and lock Subscription
+    -> revalidate provider identity
+    -> compare provider state version
+    -> classify drift
+    -> apply supported repair
+    -> flush
+    -> commit
+```
+
+The first transaction intentionally ends before the provider call.
+
+This avoids holding database connections and row locks while waiting for an
+external dependency.
+
+The subscription is reloaded after the provider call because local state may
+have changed concurrently.
+
+## Identity Revalidation
+
+The reconciliation command accepts a trusted local subscription UUID.
+
+The first database read resolves:
+
+```text
+provider
+provider_subscription_id
+```
+
+The returned provider snapshot must match both values.
+
+After the external provider call, Transaction B locks the subscription and
+revalidates:
+
+```text
+subscription ID
+provider
+provider subscription ID
+```
+
+A mismatch is rejected as:
+
+```text
+billing_reconciliation_provider_identity_mismatch
+```
+
+This protects against subscription identity changes during the external call.
+
+## Provider and Local Sources of Truth
+
+The provider is authoritative for:
+
+- provider subscription ID;
+- provider state version;
+- active provider price code;
+- lifecycle status;
+- current provider billing period;
+- scheduled cancellation state;
+- final cancellation timestamp.
+
+ClinicOps is authoritative for:
+
+- local subscription ID;
+- tenant ownership;
+- billing customer ownership;
+- supported price catalog;
+- plan;
+- billing interval;
+- currency;
+- unit amount;
+- local audit timestamps;
+- local workflow metadata;
+- processing and reconciliation policy.
+
+The provider supplies a price code.
+
+ClinicOps resolves the commercial attributes from the local catalog.
+
+The provider cannot directly supply trusted monetary or local ownership data.
+
+## Provider State Ordering
+
+`provider_state_version` remains the primary monotonic ordering boundary.
+
+Rules:
+
+```text
+snapshot version < local version
+    -> outcome = ignored
+    -> no local mutation
+
+snapshot version == local version
+    -> compare lifecycle and derived state
+    -> repair supported drift when safe
+
+snapshot version > local version
+    -> compare lifecycle and repair supported drift
+```
+
+An older snapshot can never reduce local provider state.
+
+The version comparison is performed after the subscription row is locked.
+
+This protects reconciliation from snapshots captured before a concurrent
+webhook or reconciliation update.
+
+## Drift Classification
+
+Reconciliation compares provider-owned and locally derived state.
+
+Provider-backed drift fields include:
+
+```text
+price_code
+status
+current_period_start
+current_period_end
+cancel_at_period_end
+canceled_at
+provider_state_version
+last_provider_event_at
+```
+
+Locally derived commercial fields include:
+
+```text
+plan
+billing_interval
+currency
+unit_amount
+```
+
+Local workflow state may also include:
+
+```text
+pending_price_code
+```
+
+`drift_fields` is returned in deterministic alphabetical order.
+
+An `in_sync` result contains no drift fields.
+
+A `repaired` result contains at least one drift field.
+
+An `ignored` result identifies an older provider state version.
+
+## In-Sync Behavior
+
+When provider and local state already match:
+
+```text
+outcome = in_sync
+drift_fields = []
+```
+
+The reconciliation service does not:
+
+- perform an unnecessary flush;
+- update timestamps only to create a write;
+- increment provider state versions;
+- clear a valid pending plan;
+- alter audit history.
+
+`last_provider_event_at` changes only as part of a real supported repair.
+
+## Active Subscription Reconciliation
+
+For an active provider snapshot:
+
+```text
+status = active
+canceled_at = null
+```
+
+reconciliation may repair:
+
+```text
+price_code
+plan
+billing_interval
+currency
+unit_amount
+status
+current_period_start
+current_period_end
+cancel_at_period_end
+canceled_at
+provider_state_version
+last_provider_event_at
+```
+
+The provider period must not regress the current local period.
+
+Automatic reactivation is not supported.
+
+An active provider snapshot cannot silently reactivate a local subscription
+that is already finally canceled.
+
+## Pending Plan Reconciliation
+
+When:
+
+```text
+snapshot.price_code == local.price_code
+```
+
+a local `pending_price_code` remains scheduled.
+
+When:
+
+```text
+snapshot.price_code == local.pending_price_code
+```
+
+the provider has materialized the planned change.
+
+Reconciliation then:
+
+```text
+price_code = snapshot.price_code
+plan = local catalog plan
+billing_interval = local catalog interval
+currency = local catalog currency
+unit_amount = local catalog amount
+pending_price_code = null
+```
+
+A provider price unrelated to both the current and pending local price is
+rejected as:
+
+```text
+unexpected_provider_price
+```
+
+Reconciliation does not silently adopt arbitrary provider prices.
+
+## Scheduled Cancellation Reconciliation
+
+For an active provider snapshot with:
+
+```text
+cancel_at_period_end = true
+canceled_at = null
+```
+
+reconciliation may restore missing local scheduled-cancellation state.
+
+Applied state:
+
+```text
+status = active
+cancel_at_period_end = true
+canceled_at = null
+pending_price_code = null
+```
+
+An existing:
+
+```text
+cancellation_requested_at
+```
+
+is preserved.
+
+When no local request timestamp exists, reconciliation leaves it null.
+
+The provider cannot recreate the original ClinicOps request timestamp, so the
+service does not invent one.
+
+When a newer active provider snapshot reports:
+
+```text
+cancel_at_period_end = false
+```
+
+a stale local scheduled-cancellation flag may be cleared.
+
+The historical `cancellation_requested_at` value remains preserved.
+
+## Final Cancellation Reconciliation
+
+For a canceled provider snapshot:
+
+```text
+status = canceled
+cancel_at_period_end = false
+canceled_at != null
+```
+
+reconciliation may apply:
+
+```text
+status = canceled
+canceled_at = snapshot.canceled_at
+cancel_at_period_end = false
+pending_price_code = null
+current_period_start = snapshot.current_period_start
+current_period_end = snapshot.current_period_end
+provider_state_version = snapshot.provider_state_version
+last_provider_event_at = snapshot.observed_at
+```
+
+`cancellation_requested_at` remains unchanged.
+
+A provider-authoritative cancellation may be repaired even when ClinicOps did
+not initiate the cancellation.
+
+## Scheduled Cancellation Boundary Protection
+
+When the local subscription already has:
+
+```text
+cancel_at_period_end = true
+```
+
+a final canceled snapshot must confirm:
+
+```text
+snapshot.current_period_end
+    == local.current_period_end
+
+snapshot.canceled_at
+    == local.current_period_end
+```
+
+A mismatch is rejected as:
+
+```text
+scheduled_cancellation_boundary_mismatch
+```
+
+This prevents reconciliation from silently converting an existing scheduled
+cancellation into a different provider cancellation boundary.
+
+## Reconciliation Failure Classification
+
+Stable reconciliation errors include:
+
+```text
+billing_reconciliation_subscription_not_found
+billing_reconciliation_provider_state_not_found
+billing_reconciliation_provider_identity_mismatch
+billing_reconciliation_unsupported_price
+billing_reconciliation_invalid_snapshot
+billing_reconciliation_conflict
+```
+
+Implemented conflict categories include:
+
+```text
+provider_subscription_identity_missing
+invalid_local_provider_state_version
+reactivation_not_supported
+unsupported_local_subscription_status
+incomplete_local_billing_period
+provider_period_regression
+unexpected_provider_price
+scheduled_cancellation_boundary_mismatch
+```
+
+Transient provider adapter failures remain provider or infrastructure errors.
+
+This milestone does not persist a separate reconciliation-attempt table.
+
+Attempt scheduling, retry timing, history, and operational ownership belong to
+the background-jobs boundary.
+
+## Reconciliation Atomicity
+
+Transaction B owns the local repair.
+
+If reconciliation fails after SQLAlchemy flush but before commit:
+
+```text
+all local subscription changes roll back
+provider state remains unchanged
+no partial repair is persisted
+```
+
+Reconciliation does not persist a separate result row.
+
+The returned result describes the completed comparison and local transaction.
+
+## Reconciliation Concurrency
+
+### Concurrent Reconciliation
+
+Two workers may fetch the same provider snapshot.
+
+Both then attempt to lock the same local subscription.
+
+Expected behavior:
+
+```text
+first worker
+    -> locks subscription
+    -> repairs drift
+    -> commits
+
+second worker
+    -> locks updated subscription
+    -> compares same snapshot
+    -> returns in_sync
+```
+
+Only one repair is applied.
+
+### Reconciliation and Webhook Processing
+
+Both workflows lock the same subscription row before mutation.
+
+Example:
+
+```text
+reconciliation captures provider snapshot version 5
+webhook processing applies provider event version 6
+reconciliation obtains subscription lock
+reconciliation reloads local version 6
+snapshot version 5 is ignored
+```
+
+The newer webhook-applied state wins.
+
+A provider snapshot captured before a concurrent update cannot overwrite newer
+local provider state.
 
 ## Time Handling
 
@@ -3481,7 +4115,38 @@ Coverage includes:
 - same-event concurrency;
 - same-subscription concurrency;
 - independent SQLAlchemy sessions per worker;
-- final provider state monotonicity.
+- final provider state monotonicity;
+- provider snapshot contract validation;
+- provider snapshot protocol compatibility;
+- unknown provider subscription lookup;
+- deterministic provider observation timestamps;
+- scheduled plan materialization;
+- scheduled cancellation materialization;
+- materialization idempotency;
+- external provider call outside database transactions;
+- provider identity revalidation;
+- active in-sync reconciliation;
+- active-state repair;
+- pending plan activation;
+- pending plan preservation;
+- equal-version catalog drift repair;
+- older snapshot ignore;
+- provider period regression rejection;
+- unexpected provider price rejection;
+- scheduled cancellation repair;
+- missing cancellation request timestamp preservation;
+- stale local cancellation flag cleanup;
+- final cancellation repair;
+- provider-authoritative cancellation;
+- scheduled cancellation boundary mismatch;
+- automatic reactivation rejection;
+- PostgreSQL plan repair;
+- PostgreSQL final cancellation repair;
+- PostgreSQL stale snapshot protection;
+- repair rollback after flush;
+- concurrent reconciliation;
+- reconciliation and webhook-processing race;
+- independent SQLAlchemy sessions per worker.
 
 Migration parity is checked through:
 
@@ -3811,22 +4476,82 @@ subscription ID.
 
 138. Concurrent events for one subscription are serialized by row locking.
 
+139. Reconciliation operates on one trusted local subscription UUID.
+
+140. Provider identity is resolved from the local subscription.
+
+141. Provider calls occur outside database transactions.
+
+142. Local provider identity is revalidated after the provider call.
+
+143. The subscription row is locked before drift comparison and repair.
+
+144. Provider snapshot identity must match the local provider identity.
+
+145. Provider state version is the primary reconciliation ordering boundary.
+
+146. Older provider snapshots cannot mutate local state.
+
+147. Equal-version drift may be repaired when the state is safely
+    reconcilable.
+
+148. Reconciliation does not write when the subscription is already in sync.
+
+149. Drift fields are deterministic and unique.
+
+150. Commercial price attributes are resolved from the local catalog.
+
+151. A provider price must match the current or pending local price.
+
+152. Reconciliation cannot automatically reactivate a canceled subscription.
+
+153. Reconciliation does not invent cancellation request timestamps.
+
+154. Final cancellation preserves local cancellation request history.
+
+155. Scheduled cancellation confirmation must match the local boundary.
+
+156. Provider-authoritative cancellation may be repaired without a local
+    request.
+
+157. Reconciliation repair is committed atomically.
+
+158. Concurrent reconciliation applies one repair.
+
+159. Reconciliation cannot overwrite a newer webhook-applied provider
+    version.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
+- periodic reconciliation scheduling;
+- automatic subscription discovery;
+- tenant-scoped reconciliation batches;
+- provider pagination;
+- provider rate-limit coordination;
+- reconciliation attempt persistence;
+- reconciliation history API;
+- administrative reconciliation endpoint;
+- operator-triggered replay;
+- background retries;
+- exponential backoff;
+- jitter;
+- stale processing recovery;
+- maximum retry attempts;
+- dead-letter handling;
+- invoice reconciliation;
+- payment reconciliation;
+- refund reconciliation;
+- credit reconciliation;
+- entitlement correction;
+- reactivation workflows;
+- undo-cancellation workflows;
+- real payment-provider adapters;
 - background worker loop;
 - automatic event discovery;
 - scheduled retry execution;
-- exponential backoff;
-- jitter;
 - retry availability timestamps;
-- stale `processing` recovery;
-- maximum processing attempts;
-- dead-letter handling;
-- manual replay tooling;
-- provider reconciliation;
-- provider API state fetches;
 - entitlement application;
 - invoice processing;
 - refunds;
@@ -3834,7 +4559,6 @@ The following capabilities are intentionally deferred:
 - proration;
 - reactivation;
 - undo cancellation;
-- real provider adapters;
 - subscription history;
 - invoice history;
 - payment history;
@@ -3868,12 +4592,14 @@ The following capabilities are intentionally deferred:
 - multiple currencies;
 - production notification delivery.
 
-These are future operational and billing capabilities, not responsibilities of
-the implemented processing boundary.
+These are future operational or expanded billing capabilities.
+
+They do not belong to the implemented single-subscription reconciliation
+boundary.
 
 They are not required to establish the current domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
-plan-change, scheduled cancellation, webhook-ingestion, and webhook-processing
-workflow foundations. They will be added only when their data ownership,
-transaction, security, failure, and testing boundaries are implemented
-explicitly.
+plan-change, scheduled cancellation, webhook-ingestion, webhook-processing,
+and reconciliation workflow foundations. They will be added only when their
+data ownership, transaction, security, failure, and testing boundaries are
+implemented explicitly.
