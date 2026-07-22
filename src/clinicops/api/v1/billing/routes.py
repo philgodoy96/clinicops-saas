@@ -8,7 +8,9 @@ from clinicops.api.dependencies import (
 from clinicops.api.v1.billing.dependencies import (
     BillingIdempotencyKeyDependency,
     BillingManageTenantContextDependency,
+    BillingReadTenantContextDependency,
     CreateBillingSubscriptionServiceDependency,
+    GetBillingSubscriptionServiceDependency,
 )
 from clinicops.api.v1.billing.schemas import (
     BillingSubscriptionResponse,
@@ -18,11 +20,39 @@ from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionCommand,
     CreatedBillingSubscription,
 )
+from clinicops.billing.services.get_subscription import (
+    BillingSubscriptionDetails,
+    GetBillingSubscriptionQuery,
+)
 
 router = APIRouter(
     prefix="/tenants",
     tags=["billing"],
 )
+
+
+@router.get(
+    "/{tenant_id}/billing/subscription",
+    response_model=BillingSubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get tenant billing subscription",
+)
+def get_billing_subscription(
+    tenant_id: UUID,
+    session: DatabaseSessionDependency,
+    _tenant_context: BillingReadTenantContextDependency,
+    service: GetBillingSubscriptionServiceDependency,
+) -> BillingSubscriptionResponse:
+    """Return the current persisted tenant billing subscription."""
+
+    result = service.execute(
+        session,
+        GetBillingSubscriptionQuery(
+            tenant_id=tenant_id,
+        ),
+    )
+
+    return _to_response(result)
 
 
 @router.post(
@@ -57,7 +87,7 @@ def create_billing_subscription(
 
 
 def _to_response(
-    result: CreatedBillingSubscription,
+    result: (BillingSubscriptionDetails | CreatedBillingSubscription),
 ) -> BillingSubscriptionResponse:
     return BillingSubscriptionResponse(
         id=result.id,
