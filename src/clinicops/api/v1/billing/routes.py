@@ -1,0 +1,79 @@
+from uuid import UUID
+
+from fastapi import APIRouter, Response, status
+
+from clinicops.api.dependencies import (
+    DatabaseSessionDependency,
+)
+from clinicops.api.v1.billing.dependencies import (
+    BillingIdempotencyKeyDependency,
+    BillingManageTenantContextDependency,
+    CreateBillingSubscriptionServiceDependency,
+)
+from clinicops.api.v1.billing.schemas import (
+    BillingSubscriptionResponse,
+    CreateBillingSubscriptionRequest,
+)
+from clinicops.billing.services.create_subscription import (
+    CreateBillingSubscriptionCommand,
+    CreatedBillingSubscription,
+)
+
+router = APIRouter(
+    prefix="/tenants",
+    tags=["billing"],
+)
+
+
+@router.post(
+    "/{tenant_id}/billing/subscription",
+    response_model=BillingSubscriptionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create tenant billing subscription",
+)
+def create_billing_subscription(
+    tenant_id: UUID,
+    payload: CreateBillingSubscriptionRequest,
+    response: Response,
+    session: DatabaseSessionDependency,
+    _tenant_context: BillingManageTenantContextDependency,
+    idempotency_key: BillingIdempotencyKeyDependency,
+    service: CreateBillingSubscriptionServiceDependency,
+) -> BillingSubscriptionResponse:
+    """Create or replay the tenant's billing subscription."""
+
+    result = service.execute(
+        session,
+        CreateBillingSubscriptionCommand(
+            tenant_id=tenant_id,
+            price_code=payload.price_code,
+            idempotency_key=idempotency_key,
+        ),
+    )
+
+    response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED
+
+    return _to_response(result)
+
+
+def _to_response(
+    result: CreatedBillingSubscription,
+) -> BillingSubscriptionResponse:
+    return BillingSubscriptionResponse(
+        id=result.id,
+        tenant_id=result.tenant_id,
+        price_code=result.price_code,
+        plan=result.plan,
+        billing_interval=result.billing_interval,
+        currency=result.currency,
+        unit_amount=result.unit_amount,
+        status=result.status,
+        current_period_start=result.current_period_start,
+        current_period_end=result.current_period_end,
+        cancel_at_period_end=result.cancel_at_period_end,
+        cancellation_requested_at=(result.cancellation_requested_at),
+        canceled_at=result.canceled_at,
+        pending_price_code=result.pending_price_code,
+        created_at=result.created_at,
+        updated_at=result.updated_at,
+    )
