@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from clinicops.jobs.enums import BackgroundJobStatus
@@ -33,7 +33,32 @@ class EnqueuedBackgroundJob:
     max_attempts: int
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimBackgroundJobsCommand:
+    worker_id: str
+    batch_size: int
+    lease_duration: timedelta
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedBackgroundJob:
+    job_id: UUID
+    job_type: str
+    payload_version: int
+    payload: JSONObject
+    processing_attempt_count: int
+    max_attempts: int
+    worker_id: str
+    claim_token: UUID
+    claimed_at: datetime
+    lease_expires_at: datetime
+    correlation_id: str
+    origin_request_id: str | None
+
+
 __all__ = [
+    "ClaimBackgroundJobsCommand",
+    "ClaimedBackgroundJob",
     "EnqueueBackgroundJobCommand",
     "EnqueuedBackgroundJob",
     "JSONObject",

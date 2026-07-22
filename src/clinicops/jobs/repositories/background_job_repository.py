@@ -1,9 +1,11 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from clinicops.jobs.enums import BackgroundJobStatus
 from clinicops.jobs.models import BackgroundJob
 
 
@@ -85,6 +87,46 @@ class BackgroundJobRepository:
             raise RuntimeError("The conflicting background job could not be loaded.")
 
         return existing_job, False
+
+    def get_database_time(self) -> datetime:
+        database_time = self._session.execute(select(func.now())).scalar_one_or_none()
+
+        if database_time is None:
+            raise RuntimeError("PostgreSQL current time could not be retrieved.")
+
+        return database_time
+
+    def claim_available_for_update_skip_locked(
+        self,
+        *,
+        batch_size: int,
+    ) -> list[BackgroundJob]:
+        statement = (
+            select(BackgroundJob)
+            .where(
+                BackgroundJob.status.in_(
+                    (
+                        BackgroundJobStatus.QUEUED,
+                        BackgroundJobStatus.RETRY_SCHEDULED,
+                    )
+                ),
+                BackgroundJob.available_at <= func.now(),
+                (BackgroundJob.processing_attempt_count < BackgroundJob.max_attempts),
+            )
+            .order_by(
+                BackgroundJob.priority.desc(),
+                BackgroundJob.available_at.asc(),
+                BackgroundJob.created_at.asc(),
+                BackgroundJob.id.asc(),
+            )
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+
+        return list(self._session.scalars(statement).all())
+
+    def flush(self) -> None:
+        self._session.flush()
 
 
 __all__ = ["BackgroundJobRepository"]
