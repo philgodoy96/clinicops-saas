@@ -6,6 +6,9 @@ from clinicops.api.v1.authentication.routes import (
 from clinicops.api.v1.billing.routes import (
     router as billing_router,
 )
+from clinicops.api.v1.billing.webhooks import (
+    router as billing_webhook_router,
+)
 from clinicops.api.v1.health import router as health_router
 from clinicops.api.v1.invitations.routes import (
     router as invitation_router,
@@ -25,3 +28,4 @@ router.include_router(
 router.include_router(invitation_router)
 router.include_router(tenant_router)
 router.include_router(billing_router)
+router.include_router(billing_webhook_router)

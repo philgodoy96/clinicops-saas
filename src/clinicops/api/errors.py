@@ -40,6 +40,11 @@ from clinicops.billing.exceptions import (
     BillingSubscriptionCancellationPendingError,
     BillingSubscriptionNotActiveError,
     BillingSubscriptionNotFoundError,
+    BillingWebhookAuthenticationError,
+    BillingWebhookEventConflictError,
+    BillingWebhookPayloadInvalidError,
+    BillingWebhookPayloadTooLargeError,
+    BillingWebhookProviderNotFoundError,
     InvalidIdempotencyKeyError,
     MissingIdempotencyKeyError,
     ProviderOperationAlreadyExistsError,
@@ -157,6 +162,11 @@ HTTP_PROBLEM_DEFINITIONS: dict[int, HttpProblemDefinition] = {
         code="conflict",
         title="Resource conflict",
         detail="The request conflicts with the current resource state.",
+    ),
+    status.HTTP_413_CONTENT_TOO_LARGE: HttpProblemDefinition(
+        code="payload_too_large",
+        title="Payload too large",
+        detail="The request payload exceeds the allowed size.",
     ),
     status.HTTP_429_TOO_MANY_REQUESTS: HttpProblemDefinition(
         code="rate_limit_exceeded",
@@ -422,6 +432,41 @@ def _application_problem(
         return (
             status.HTTP_409_CONFLICT,
             "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, BillingWebhookAuthenticationError):
+        return (
+            status.HTTP_401_UNAUTHORIZED,
+            "Webhook authentication failed",
+            None,
+        )
+
+    if isinstance(exception, BillingWebhookProviderNotFoundError):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, BillingWebhookPayloadTooLargeError):
+        return (
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "Payload too large",
+            None,
+        )
+
+    if isinstance(exception, BillingWebhookEventConflictError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, BillingWebhookPayloadInvalidError):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Invalid webhook payload",
             None,
         )
 
