@@ -44,6 +44,7 @@ POST /api/v1/tenants/{tenant_id}/invitations/{invitation_id}/revoke
 GET  /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+POST /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
 ```
 
 ## Global tenant discovery
@@ -196,6 +197,7 @@ Current route mapping:
 | Read billing subscription | `BILLING_READ` |
 | Create billing subscription | `BILLING_MANAGE` |
 | Schedule billing plan change | `BILLING_MANAGE` |
+| Schedule billing subscription cancellation | `BILLING_MANAGE` |
 
 The permission result is represented by:
 
@@ -465,7 +467,7 @@ BILLING_READ
 BILLING_MANAGE
     -> create a subscription
     -> schedule a plan change
-    -> future cancellation mutations
+    -> schedule subscription cancellation
 ```
 
 Administrators can inspect billing state but cannot mutate billing lifecycle
@@ -695,10 +697,112 @@ provider failure payloads
 the internal replay flag
 ```
 
-### Deferred billing mutations
+## Billing subscription cancellation mutation
 
-Cancellations remain deferred. Their eventual mutations will also require
-`BILLING_MANAGE`.
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
+```
+
+Requires:
+
+```text
+TenantPermission.BILLING_MANAGE
+```
+
+The route uses the existing tenant-context dependency and permission policy.
+
+It does not authorize through a direct role comparison in the route.
+
+### Authorization flow
+
+```text
+Bearer access token
+    -> resolve authenticated user and session
+    -> load tenant from path tenant_id
+    -> load current membership
+    -> validate tenant and membership state
+    -> require BILLING_MANAGE
+    -> validate Idempotency-Key
+    -> execute scheduled cancellation workflow
+```
+
+### Request body trust boundary
+
+The request has no body and cannot control:
+
+```text
+tenant identity outside the path
+provider subscription identity
+provider operation keys
+effective date
+current subscription status
+cancel_at_period_end
+cancellation_requested_at
+canceled_at
+provider state version
+pending plan cleanup
+```
+
+Cancellation remains tenant-scoped even though the request has no body.
+
+The route path and authorized tenant context are the only sources of tenant
+identity.
+
+The server resolves tenant identity from the path and authorized tenant
+context.
+
+The server derives the cancellation effective date from the persisted
+`current_period_end`.
+
+The server records `cancellation_requested_at` from the application clock.
+
+### Expected authorization and lifecycle outcomes
+
+```text
+tenant does not exist
+    -> 404
+
+authenticated user has no membership
+    -> 404
+
+tenant is disabled
+    -> 403
+
+membership is disabled
+    -> 403
+
+membership lacks BILLING_MANAGE
+    -> 403
+
+tenant has no subscription
+    -> 404 billing_subscription_not_found
+
+subscription is inactive
+    -> 409 billing_subscription_not_active
+
+subscription is already canceled
+    -> 409 billing_subscription_already_canceled
+
+cancellation is already pending
+    -> 409 billing_subscription_cancellation_pending
+
+authorized active subscription
+    -> workflow proceeds
+```
+
+### Public response boundary
+
+The public cancellation response does not expose:
+
+```text
+provider subscription IDs
+provider operation IDs
+provider operation keys
+provider references
+idempotency fingerprints
+provider failure payloads
+the internal replay flag
+```
 
 ## Authorization defense in depth
 
@@ -883,7 +987,6 @@ membership role changes
 membership activation or deactivation
 membership removal
 ownership transfer
-billing cancellations
 patients
 professionals
 audit-log queries
@@ -896,11 +999,11 @@ Membership administration and ownership transfer require dedicated
 transactional invariants, including protection of the tenant's single active
 owner.
 
-Subscription creation and scheduled plan changes are the billing mutations
-exposed through the current tenant API. Billing subscription read is available
-to callers with `BILLING_READ`. Cancellations remain deferred.
+Subscription creation, scheduled plan changes, and scheduled subscription
+cancellation are the billing mutations exposed through the current tenant API.
+Billing subscription read is available to callers with `BILLING_READ`.
 
 Those remaining capabilities are addressed in subsequent milestones instead of
 being partially introduced into the current tenant read, invitation-
-administration, subscription-read, subscription-creation, and plan-change
-boundary.
+administration, subscription-read, subscription-creation, plan-change, and
+cancellation boundary.

@@ -54,6 +54,9 @@ POST
 
 POST
     /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+
+POST
+    /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
 ```
 
 ```text
@@ -71,6 +74,14 @@ POST subscription
 POST plan-change
     -> BILLING_MANAGE
     -> Idempotency-Key required
+    -> request body required
+    -> 200 first success
+    -> 200 successful replay
+
+POST cancellation
+    -> BILLING_MANAGE
+    -> Idempotency-Key required
+    -> no request body
     -> 200 first success
     -> 200 successful replay
 ```
@@ -545,6 +556,115 @@ The plan-change provider call occurs without an open database transaction.
 
 The route remains thin and does not own commit boundaries.
 
+## Billing subscription cancellation
+
+```http
+POST /api/v1/tenants/{tenant_id}/billing/subscription/cancellation
+Authorization: Bearer <access-token>
+Idempotency-Key: <opaque client-generated key>
+```
+
+The request has no JSON body.
+
+The client does not provide:
+
+- tenant ID in a body;
+- provider subscription ID;
+- provider operation key;
+- effective date;
+- cancellation timestamp;
+- subscription status;
+- provider state version.
+
+Successful response:
+
+```text
+200 OK
+application/json
+```
+
+Example:
+
+```json
+{
+  "id": "subscription-uuid",
+  "tenant_id": "tenant-uuid",
+  "price_code": "starter_monthly",
+  "plan": "starter",
+  "billing_interval": "monthly",
+  "currency": "USD",
+  "unit_amount": 4900,
+  "status": "active",
+  "current_period_start": "2026-07-22T12:00:00Z",
+  "current_period_end": "2026-08-22T12:00:00Z",
+  "cancel_at_period_end": true,
+  "cancellation_requested_at": "2026-07-24T15:00:00Z",
+  "canceled_at": null,
+  "pending_price_code": null,
+  "created_at": "2026-07-22T12:00:00Z",
+  "updated_at": "2026-07-24T15:00:00Z"
+}
+```
+
+The active subscription remains active until the current period ends.
+
+Cancellation success clears any public `pending_price_code` value while
+preserving the active `price_code`.
+
+Both the first successful execution and a successful replay return:
+
+```text
+200 OK
+```
+
+The internal `replayed` flag is not part of the public response.
+
+Success and replay semantics:
+
+```text
+first successful execution
+    -> 200 OK
+
+same key + same persisted period boundary after success
+    -> 200 OK
+    -> persisted subscription replay
+    -> no provider call
+
+same key + changed persisted period boundary
+    -> 409 Conflict
+
+new key + existing pending cancellation
+    -> 409 Conflict
+```
+
+## Scheduled Cancellation Transport
+
+The route:
+
+- resolves the authenticated principal;
+- resolves tenant context from `{tenant_id}`;
+- requires `BILLING_MANAGE`;
+- validates `Idempotency-Key`;
+- creates `ScheduleBillingSubscriptionCancellationCommand`;
+- invokes `ScheduleBillingSubscriptionCancellationService`;
+- maps the result to `BillingSubscriptionResponse`.
+
+The route does not:
+
+- accept a request body;
+- derive provider operation keys;
+- accept provider identifiers;
+- select the effective date;
+- mark the subscription as finally canceled;
+- own provider-specific behavior;
+- expose the replay flag.
+
+The application orchestrator owns the multi-transaction workflow.
+
+The cancellation provider call occurs without an open database transaction.
+
+The route remains thin and does not own commit boundaries.
+
 ## Transaction ownership
 
 Application services flush database changes but do not commit.
@@ -583,8 +703,8 @@ transaction back before closing the session.
 Most existing write routes call a flush-only application service and then own
 one final `session.commit()`.
 
-Billing subscription creation and scheduled plan change are intentional
-exceptions.
+Billing subscription creation, scheduled plan change, and scheduled
+cancellation are intentional exceptions.
 
 Their application orchestrators own multiple short commits because the
 workflows must guarantee:
@@ -599,8 +719,9 @@ The route remains thin. It validates transport concerns, resolves
 authorization and dependencies, invokes the orchestrator, and maps the result
 to the public response.
 
-For scheduled plan change, the provider call occurs without an open database
-transaction. The route does not own commit boundaries.
+For scheduled plan change and scheduled cancellation, the provider call occurs
+without an open database transaction. The route does not own commit
+boundaries.
 
 This exception does not change the default rule for ordinary domain services.
 
@@ -732,6 +853,29 @@ Scheduled plan-change failures map to:
     ambiguous provider outcome
 ```
 
+Scheduled cancellation failures map to:
+
+```text
+400
+    missing idempotency key
+    invalid idempotency key
+
+404
+    billing subscription not found
+
+409
+    subscription not active
+    subscription already canceled
+    cancellation already pending
+    idempotency fingerprint conflict
+    provider operation in progress
+    terminal provider rejection
+
+503
+    retryable provider failure
+    ambiguous provider outcome
+```
+
 ## Request and correlation identifiers
 
 Every HTTP request receives:
@@ -770,7 +914,7 @@ The FastAPI application exposes:
 /docs
 ```
 
-OpenAPI remains the source of truth for the current HTTP contract.
+OpenAPI remains the current source of truth for the HTTP contract.
 
 Protected operations declare an HTTP bearer security scheme.
 
@@ -787,11 +931,17 @@ implemented:
 - immediate plan change;
 - pending-plan replacement;
 - pending-plan cancellation;
-- subscription cancellation;
 - automatic renewal application;
+- immediate cancellation;
+- undo cancellation;
+- reactivation;
+- final cancellation application;
+- automatic entitlement revocation;
 - webhook processing;
 - background execution;
-- entitlements.
+- provider reconciliation;
+- refunds;
+- proration.
 
 ## Security decisions
 
@@ -845,9 +995,10 @@ The HTTP transport intentionally does not:
 - implement browser cookies before a browser client exists;
 - add tenant selection to global authentication routes.
 
-Billing subscription creation and scheduled plan change remain the documented
-multi-transaction exceptions to flush-only application services. Those
-exceptions do not change the default rule for ordinary domain services.
+Billing subscription creation, scheduled plan change, and scheduled
+cancellation remain the documented multi-transaction exceptions to flush-only
+application services. Those exceptions do not change the default rule for
+ordinary domain services.
 
 These boundaries keep identity establishment, session lifecycle, tenant
 authorization, and transport concerns explicit and independently testable.
