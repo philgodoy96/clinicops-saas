@@ -189,7 +189,7 @@ def test_provider_allows_only_one_subscription_per_customer() -> None:
     assert exception_info.value.reason == "customer_already_has_subscription"
 
 
-def test_change_plan_applies_at_period_boundary_once() -> None:
+def test_change_plan_schedules_target_at_period_boundary_once() -> None:
     provider = FakePaymentProvider()
     provider_customer_id = _create_customer(provider)
     provider_subscription_id = _create_subscription(
@@ -217,6 +217,49 @@ def test_change_plan_applies_at_period_boundary_once() -> None:
         tzinfo=UTC,
     )
     assert replayed == first
+
+    canceled = provider.cancel_subscription(
+        CancelSubscriptionRequest(
+            provider_operation_key=(CANCEL_SUBSCRIPTION_KEY),
+            provider_subscription_id=(provider_subscription_id),
+            effective_at=MONTHLY_PERIOD_END,
+        )
+    )
+
+    assert canceled.canceled_at == MONTHLY_PERIOD_END
+    assert canceled.provider_state_version == 3
+
+
+def test_new_plan_change_is_rejected_while_one_is_pending() -> None:
+    provider = FakePaymentProvider()
+    provider_customer_id = _create_customer(provider)
+    provider_subscription_id = _create_subscription(
+        provider,
+        provider_customer_id=provider_customer_id,
+    )
+
+    provider.change_plan(
+        ChangePlanRequest(
+            provider_operation_key=CHANGE_PLAN_KEY,
+            provider_subscription_id=(provider_subscription_id),
+            target_price_code="professional_monthly",
+            effective_at=MONTHLY_PERIOD_END,
+        )
+    )
+
+    with pytest.raises(ProviderInvalidStateError) as exception_info:
+        provider.change_plan(
+            ChangePlanRequest(
+                provider_operation_key=(
+                    build_provider_operation_key(UUID("9920997d-dbe4-414a-a870-474d71a07fa4"))
+                ),
+                provider_subscription_id=(provider_subscription_id),
+                target_price_code="starter_yearly",
+                effective_at=MONTHLY_PERIOD_END,
+            )
+        )
+
+    assert exception_info.value.reason == "plan_change_already_pending"
 
 
 def test_change_plan_rejects_early_effective_at() -> None:

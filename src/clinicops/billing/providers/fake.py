@@ -78,6 +78,8 @@ class _FakeSubscription:
     current_period_start: datetime
     current_period_end: datetime
     provider_state_version: int
+    pending_price_code: str | None = None
+    pending_effective_at: datetime | None = None
     canceled_at: datetime | None = None
 
 
@@ -241,6 +243,8 @@ class FakePaymentProvider:
         self,
         request: ChangePlanRequest,
     ) -> ChangePlanResult:
+        """Schedule a provider-side price change at period end."""
+
         operation_type = ProviderOperationType.CHANGE_PLAN
         request_fingerprint = fingerprint_provider_request(
             operation_type=operation_type,
@@ -290,13 +294,20 @@ class FakePaymentProvider:
                     reason="price_already_selected",
                 )
 
+            if subscription.pending_price_code is not None:
+                raise ProviderInvalidStateError(
+                    provider=self.provider,
+                    operation_type=operation_type,
+                    reason="plan_change_already_pending",
+                )
+
             self._require_period_boundary(
                 effective_at=request.effective_at,
                 current_period_end=(subscription.current_period_end),
                 operation_type=operation_type,
             )
 
-            period = calculate_billing_period(
+            future_period = calculate_billing_period(
                 effective_at=request.effective_at,
                 billing_interval=(target_price.billing_interval),
             )
@@ -306,14 +317,13 @@ class FakePaymentProvider:
                 provider_subscription_id=(request.provider_subscription_id),
                 provider_state_version=next_version,
                 effective_price_code=(target_price.price_code),
-                current_period_start=period.start,
-                current_period_end=period.end,
+                current_period_start=future_period.start,
+                current_period_end=future_period.end,
                 provider_reference=(f"fake_op_{stable_token}"),
             )
 
-            subscription.price_code = target_price.price_code
-            subscription.current_period_start = period.start
-            subscription.current_period_end = period.end
+            subscription.pending_price_code = target_price.price_code
+            subscription.pending_effective_at = request.effective_at
             subscription.provider_state_version = next_version
             self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
@@ -384,6 +394,8 @@ class FakePaymentProvider:
             )
 
             subscription.canceled_at = request.effective_at
+            subscription.pending_price_code = None
+            subscription.pending_effective_at = None
             subscription.provider_state_version = next_version
             self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
