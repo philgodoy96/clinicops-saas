@@ -287,3 +287,33 @@ class BillingSubscriptionAlreadyCanceledError(BillingError):
 
     def __init__(self) -> None:
         super().__init__("A cancellation cannot be scheduled for an already-canceled subscription.")
+
+
+class BillingWebhookAuthenticationError(BillingError):
+    """Raised when webhook request authentication fails."""
+
+    code = "billing_webhook_authentication_failed"
+    public_message = "The billing webhook signature is invalid."
+
+    def __init__(
+        self,
+        internal_message: str = ("Billing webhook authentication failed."),
+    ) -> None:
+        super().__init__(internal_message)
+
+
+class BillingWebhookPayloadTooLargeError(BillingError):
+    """Raised before authenticating an oversized webhook body."""
+
+    code = "billing_webhook_payload_too_large"
+    public_message = "The billing webhook payload exceeds the allowed size."
+
+    def __init__(
+        self,
+        *,
+        actual_size: int,
+        maximum_size: int,
+    ) -> None:
+        super().__init__(
+            f"Billing webhook payload size {actual_size} exceeds limit {maximum_size}."
+        )

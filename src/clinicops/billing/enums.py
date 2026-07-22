@@ -57,3 +57,20 @@ class WebhookEventStatus(StrEnum):
     IGNORED = "ignored"
     FAILED_RETRYABLE = "failed_retryable"
     FAILED_TERMINAL = "failed_terminal"
+
+
+class BillingWebhookEventType(StrEnum):
+    """Provider billing lifecycle events accepted by ingestion."""
+
+    SUBSCRIPTION_RENEWED = "subscription.renewed"
+    SUBSCRIPTION_CANCELED = "subscription.canceled"
+
+
+class BillingWebhookEventStatus(StrEnum):
+    """Durable local processing lifecycle for webhook events."""
+
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    FAILED_RETRYABLE = "failed_retryable"
+    FAILED_TERMINAL = "failed_terminal"
