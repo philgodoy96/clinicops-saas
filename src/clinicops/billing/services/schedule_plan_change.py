@@ -370,9 +370,7 @@ class ScheduleBillingPlanChangeService:
         self._require_in_progress(operation)
 
         if operation.subscription_id != subscription.id:
-            raise RuntimeError(
-                "Reserved plan-change operation references another subscription."
-            )
+            raise RuntimeError("Reserved plan-change operation references another subscription.")
 
         self._validate_subscription_for_change(
             subscription,
