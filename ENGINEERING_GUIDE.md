@@ -35,22 +35,27 @@ Each module remains responsible for the rules and workflows of the entities it o
 
 ## 3. Module Boundaries
 
-Expected modules include:
+Implemented packages include:
 
 ```text
 identity
-tenants
+authentication
+authorization
+tenancy
 invitations
-patients
-appointments
 billing
-webhooks
-jobs
-audit
-platform_admin
 ```
 
-Each module owns:
+Remaining current-release domains and infrastructure areas include:
+
+```text
+jobs
+audit
+patients
+professionals
+```
+
+Each package owns:
 
 - its persistent models;
 - its transport schemas;
@@ -68,6 +73,8 @@ Avoid:
 - business rules in shared utilities;
 - provider-specific payloads leaking into domain modules;
 - route handlers coordinating multiple repositories directly.
+
+Appointments and platform administration are intentionally deferred beyond the current release and are not mandatory current-release modules.
 
 ---
 
@@ -131,7 +138,7 @@ Examples include:
 - invitation acceptance;
 - ownership transfer;
 - webhook processing;
-- invoice and subscription transitions;
+- subscription lifecycle transitions;
 - business changes that require background jobs;
 - critical changes that require audit records.
 
@@ -155,9 +162,17 @@ Repositories must not:
 - decide whether an actor has permission;
 - import FastAPI;
 - raise HTTP exceptions;
-- hide database commits;
+- commit database transactions;
 - expose broad generic CRUD methods that weaken tenant isolation;
 - load tenant-owned resources globally for tenant-scoped workflows.
+
+Ordinary repositories do not commit.
+
+Ordinary services may flush but do not commit.
+
+Routes own commits for ordinary HTTP workflows.
+
+Explicit multi-transaction provider orchestration may own commits when provider calls must occur outside database locks.
 
 Correct tenant-scoped access:
 
@@ -214,7 +229,7 @@ Ownership transfer must:
 - lock the required records;
 - promote the target member;
 - demote the current owner;
-- create an audit record;
+- create an audit record once durable audit emission is available;
 - commit atomically.
 
 The system must never expose a committed state with zero or multiple active owners.
@@ -235,9 +250,11 @@ Permissions must be defined centrally and tested explicitly.
 
 Authorization logic must not be scattered as repeated string comparisons across route handlers and services.
 
-Platform administration uses a separate authorization boundary from tenant RBAC.
+Platform administration, when introduced later, uses a separate authorization boundary from tenant RBAC.
 
 A Platform Admin is not automatically a tenant member and must not receive implicit access to tenant operational data.
+
+Platform administration is intentionally deferred beyond the current release.
 
 Authorization decisions must consider:
 
@@ -318,7 +335,7 @@ Invitation acceptance must:
 - validate the target email;
 - prevent token reuse;
 - prevent duplicate membership creation;
-- create an audit record;
+- create an audit record once durable audit emission is available;
 - commit atomically.
 
 New-user and existing-user acceptance flows must enforce the same core invariants.
@@ -329,7 +346,9 @@ New-user and existing-user acceptance flows must enforce the same core invariant
 
 Patients are tenant-owned operational records.
 
-Patients are not authenticated platform users in v1.
+Patients are not authenticated platform users.
+
+Patients are not Users and are not Memberships.
 
 Each patient record belongs to exactly one tenant.
 
@@ -346,21 +365,19 @@ Sensitive patient information must not be copied unnecessarily into:
 
 ---
 
-## 14. Appointment Rules
+## 14. Professional Rules
 
-Appointments belong to one tenant.
+Professionals are tenant-owned operational profiles.
 
-The associated patient must belong to the same tenant.
+A Professional is distinct from a global User.
 
-An assigned professional membership must belong to the same tenant and be active when required.
+A Professional is distinct from a Membership.
 
-Appointment status changes must follow explicit lifecycle rules.
+A professional profile may optionally reference a Membership in the same tenant when the approved design associates clinic access with an operational profile. A professional may also exist without immediate platform access when the approved design permits it.
 
-Arbitrary status updates are forbidden.
+A Professional is not merely a billing-plan label.
 
-Invalid transitions must fail explicitly.
-
-Lifecycle rules must be tested independently from HTTP behavior.
+Professional records must not be linked, exposed, or synchronized across tenants.
 
 ---
 
@@ -368,21 +385,19 @@ Lifecycle rules must be tested independently from HTTP behavior.
 
 Billing records must follow explicit lifecycle rules.
 
-Plans define entitlements such as:
+The approved billing boundary covers subscription persistence, local catalog pricing, fake payment-provider integration, idempotent provider operations, webhook ingestion and processing, reconciliation, and concurrency protections.
 
-- maximum active users;
-- maximum active patients;
-- appointment reminder availability.
+Invoices, entitlements, refunds, credits, proration, and payment records beyond the current subscription lifecycle are intentionally deferred beyond the current release.
 
-Entitlement resolution must be centralized.
-
-Subscription and invoice state must not be changed through unrestricted generic update endpoints.
+Subscription state must not be changed through unrestricted generic update endpoints.
 
 Monetary values must use precise decimal or integer minor-unit representations, never binary floating-point values.
 
-Billing workflows must create appropriate audit records.
+Billing workflows must create appropriate audit records once durable audit emission is available.
 
 Billing changes and required durable jobs should commit in the same transaction when appropriate.
+
+Background Jobs will later operationalize webhook processing and reconciliation through durable asynchronous execution.
 
 ---
 
@@ -401,7 +416,6 @@ The system must:
 Invalid webhook requests must not create:
 
 - payment events;
-- invoice transitions;
 - subscription transitions;
 - business audit events;
 - background jobs.
@@ -420,7 +434,6 @@ A duplicate event must not produce duplicate:
 
 - billing state transitions;
 - audit records;
-- receipts;
 - background jobs.
 
 Idempotency must rely on durable database state rather than in-memory tracking.
@@ -430,6 +443,10 @@ Previously processed duplicate events may return a successful response after the
 ---
 
 ## 18. Background Job Rules
+
+Background Jobs & Worker remains a current-release milestone. The following
+rules define the approved design for that work and must not be read as evidence
+that the worker runtime already exists.
 
 Background jobs use PostgreSQL as a durable queue.
 
@@ -478,6 +495,12 @@ Sensitive information must not be placed in job payloads unless required and app
 
 ## 19. Audit Log Rules
 
+Durable Audit Logs remains a current-release milestone. The following rules
+define the approved design for that work and must not be read as evidence that
+durable audit persistence already exists.
+
+Application logs do not replace audit records.
+
 Audit logs record business-relevant actions.
 
 Examples include:
@@ -488,10 +511,8 @@ tenant.ownership_transferred
 user.invited
 invitation.accepted
 patient.created
-appointment.cancelled
+professional.created
 subscription.created
-invoice.paid
-tenant.suspended
 webhook.processed
 ```
 
@@ -649,8 +670,6 @@ Examples include:
 InvitationExpiredError
 MembershipAlreadyExistsError
 OwnershipTransferNotAllowedError
-InvalidAppointmentTransitionError
-InvoiceTransitionNotAllowedError
 ```
 
 HTTP error mapping should be centralized.

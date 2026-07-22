@@ -6,7 +6,7 @@ This document defines the directory structure principles for ClinicOps SaaS.
 
 The structure must communicate architectural boundaries, module ownership, testing strategy, runtime responsibilities, and the incremental evolution of the codebase.
 
-The directory layout is not a fixed template to be generated upfront. It is a target structure that will evolve as implementation slices introduce concrete capabilities.
+The document distinguishes the current repository layout from the target structure expected as remaining milestones land. Paths must be introduced only when their corresponding responsibilities exist.
 
 ---
 
@@ -37,7 +37,53 @@ How is this behavior tested?
 
 ---
 
-## 3. High-Level Target Structure
+## 3. Current Structure
+
+The repository currently follows a top-level domain package layout under `src/clinicops` rather than a nested `modules/` tree.
+
+```text
+clinicops-saas/
+├── .github/
+│   └── workflows/
+│
+├── docs/
+│   ├── architecture/
+│   └── development/
+│
+├── migrations/
+│
+├── src/
+│   └── clinicops/
+│       ├── api/
+│       ├── authentication/
+│       ├── authorization/
+│       ├── billing/
+│       ├── cli/
+│       ├── core/
+│       ├── db/
+│       ├── identity/
+│       ├── invitations/
+│       ├── tenancy/
+│       └── main.py
+│
+├── tests/
+│   ├── integration/
+│   └── unit/
+│
+├── .env.example
+├── .gitignore
+├── alembic.ini
+├── compose.yml
+├── ENGINEERING_GUIDE.md
+├── pyproject.toml
+└── README.md
+```
+
+The current tree reflects implemented capabilities only. It does not yet include a worker entry point, durable jobs package, audit package, patients package, professionals package, Dockerfile, ADR directory, or dedicated security-test directory.
+
+---
+
+## 4. Target Structure for Remaining Milestones
 
 ```text
 clinicops-saas/
@@ -47,7 +93,8 @@ clinicops-saas/
 ├── docs/
 │   ├── architecture/
 │   ├── adr/
-│   └── api/
+│   ├── api/
+│   └── development/
 │
 ├── migrations/
 │
@@ -56,16 +103,21 @@ clinicops-saas/
 ├── src/
 │   └── clinicops/
 │       ├── api/
+│       ├── authentication/
+│       ├── authorization/
+│       ├── billing/
 │       ├── cli/
-│       │   ├── __init__.py
-│       │   └── bootstrap_user.py
 │       ├── core/
 │       ├── db/
-│       ├── modules/
-│       ├── providers/
-│       ├── shared/
+│       ├── identity/
+│       ├── invitations/
+│       ├── tenancy/
+│       ├── jobs/            # Background Jobs & Worker
+│       ├── audit/           # Durable Audit Logs
+│       ├── patients/        # Patients Domain
+│       ├── professionals/   # Professionals Domain
 │       ├── main.py
-│       └── worker.py
+│       └── worker.py        # worker runtime entry point
 │
 ├── tests/
 │   ├── factories/
@@ -83,13 +135,17 @@ clinicops-saas/
 └── README.md
 ```
 
-This is a target structure.
+This is the target structure for remaining milestones.
 
 Directories and files must be introduced only when their corresponding responsibilities exist.
 
+Exact internal filenames inside `jobs/`, `audit/`, `patients/`, and `professionals/` remain subject to system design approval for each milestone.
+
+Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
+
 ---
 
-## 4. Incremental Scaffold Rule
+## 5. Incremental Scaffold Rule
 
 The internal structure of each module must be designed before the implementation slice that introduces it.
 
@@ -114,7 +170,7 @@ The structure should follow actual complexity rather than a universal template.
 
 ---
 
-## 5. Root-Level Directories
+## 6. Root-Level Directories
 
 ### `.github/`
 
@@ -140,8 +196,9 @@ Contains public technical documentation.
 ```text
 docs/
 ├── architecture/
-├── adr/
-└── api/
+├── development/
+├── adr/          # target for remaining milestones
+└── api/          # target for remaining milestones
 ```
 
 #### `docs/architecture/`
@@ -155,11 +212,11 @@ Examples:
 - tenant isolation;
 - authentication and authorization;
 - billing and webhook processing;
-- background job execution.
+- background job execution once that milestone lands.
 
 #### `docs/adr/`
 
-Contains Architecture Decision Records for decisions with meaningful alternatives and long-term consequences.
+Target location for Architecture Decision Records covering decisions with meaningful alternatives and long-term consequences.
 
 Examples may include:
 
@@ -174,7 +231,7 @@ Not every technical choice requires an ADR.
 
 #### `docs/api/`
 
-Contains request examples and API usage notes that complement generated OpenAPI documentation.
+Target location for request examples and API usage notes that complement generated OpenAPI documentation.
 
 ---
 
@@ -190,14 +247,14 @@ Application startup must not silently create or alter the production schema.
 
 ### `scripts/`
 
-Contains operational and development utilities.
+Target location for operational and development utilities as remaining milestones require them.
 
-Examples:
+Examples may include:
 
-- create the first Platform Admin;
 - seed subscription plans;
 - simulate signed payment webhooks;
-- validate local environment setup.
+- validate local environment setup;
+- worker operational helpers.
 
 Scripts should reuse application services where practical and must not duplicate business rules.
 
@@ -211,7 +268,7 @@ The test structure should make critical security and reliability behavior easy t
 
 ---
 
-## 6. Application Entry Points
+## 7. Application Entry Points
 
 ### `main.py`
 
@@ -232,9 +289,9 @@ It must not contain business workflows.
 
 ### `worker.py`
 
-Starts the background worker process.
+Target entry point for the background worker process introduced by the Background Jobs & Worker milestone.
 
-Responsibilities include:
+Intended responsibilities include:
 
 - configuration loading;
 - database setup;
@@ -244,9 +301,11 @@ Responsibilities include:
 
 It must not duplicate business logic from application services.
 
+The worker runtime does not exist in the current repository tree.
+
 ---
 
-## 7. Top-Level Application Packages
+## 8. Top-Level Application Packages
 
 ### `api/`
 
@@ -316,63 +375,52 @@ Entity models remain owned by their modules.
 
 ---
 
-### `modules/`
+### Domain packages
 
-Contains business and platform capabilities.
+Business and platform capabilities live as top-level packages under `src/clinicops`.
 
-Expected modules include:
+Currently implemented packages include:
 
 ```text
 identity
-tenants
+authentication
+authorization
+tenancy
 invitations
-patients
-appointments
 billing
-webhooks
+```
+
+Remaining current-release packages are expected to include:
+
+```text
 jobs
 audit
-platform_admin
+patients
+professionals
 ```
 
-Each module owns its business rules, persistence behavior, application services, and public interfaces.
+Each package owns its business rules, persistence behavior, application services, and public interfaces.
+
+Appointments and platform administration are intentionally deferred beyond the current release and are not required packages for the remaining milestones.
 
 ---
 
-### `providers/`
+### Provider boundaries
 
-Contains outbound external-system boundaries.
+Outbound external-system boundaries remain owned by the integrating package.
 
-Expected provider families include:
+Billing currently colocates its payment-provider contracts and fake adapter under
+`src/clinicops/billing/providers/`.
 
-```text
-email
-payments
-```
+Email delivery is intentionally deferred beyond the current release and must not
+be introduced as speculative scaffolding.
 
-Provider contracts and implementations must remain separate from core domain state transitions.
-
----
-
-### `shared/`
-
-Contains small reusable primitives with no natural module ownership.
-
-Possible files include:
-
-```text
-pagination.py
-typing.py
-transaction.py
-```
-
-`shared/` must not become a generic dumping ground.
-
-Module-specific enums, exceptions, and business rules must remain inside their owning modules.
+Provider contracts and implementations must remain separate from core domain
+state transitions.
 
 ---
 
-## 8. Module Internal Structure
+## 9. Module Internal Structure
 
 A module with multiple sub-responsibilities may use:
 
@@ -470,7 +518,6 @@ Examples include:
 create_tenant.py
 transfer_ownership.py
 accept_invitation.py
-create_appointment.py
 process_payment_webhook.py
 ```
 
@@ -503,52 +550,36 @@ Examples include:
 InvitationExpiredError
 MembershipAlreadyExistsError
 OwnershipTransferNotAllowedError
-InvalidAppointmentTransitionError
-InvoiceTransitionNotAllowedError
 ```
 
 Explicit exceptions make workflow behavior easier to test and reason about.
 
 ---
 
-## 9. Example Tenant Module Structure
+## 10. Example Tenant Package Structure
 
-The tenant module has multiple entities and workflows, so it may justify a package-oriented structure from the beginning.
+The tenancy package has multiple entities and workflows, so it may justify a package-oriented structure.
 
 ```text
-modules/
-└── tenants/
-    ├── api/
-    │   ├── __init__.py
-    │   ├── tenants.py
-    │   ├── memberships.py
-    │   └── ownership.py
-    │
-    ├── models/
-    │   ├── __init__.py
-    │   ├── tenant.py
-    │   └── membership.py
-    │
-    ├── schemas/
-    │   ├── __init__.py
-    │   ├── tenant.py
-    │   ├── membership.py
-    │   └── ownership.py
-    │
-    ├── repositories/
-    │   ├── __init__.py
-    │   ├── tenant_repository.py
-    │   └── membership_repository.py
-    │
-    ├── services/
-    │   ├── __init__.py
-    │   ├── create_tenant.py
-    │   ├── transfer_ownership.py
-    │   └── manage_membership.py
-    │
-    ├── policies.py
-    └── exceptions.py
+tenancy/
+├── models.py
+├── exceptions.py
+├── names.py
+├── repository.py
+├── query_repository.py
+├── membership_administration_repository.py
+└── services/
+    ├── create_tenant.py
+    ├── transfer_ownership.py
+    ├── membership_administration.py
+    ├── change_membership_role.py
+    ├── enable_membership.py
+    ├── disable_membership.py
+    ├── remove_membership.py
+    └── queries.py
 ```
+
+Exact filenames may evolve with demonstrated complexity. The example above reflects the repository's current tenancy layout rather than a speculative nested template.
 
 `Owner` is not a separate model.
 
@@ -558,9 +589,9 @@ Ownership-specific behavior belongs in services and policies.
 
 ---
 
-## Billing Module
+## Billing Package
 
-The implemented billing module uses the current top-level domain layout under
+The implemented billing package uses the current top-level domain layout under
 `src/clinicops`.
 
 ```text
@@ -572,6 +603,7 @@ src/clinicops/billing/
 ├── fingerprints.py
 ├── idempotency_keys.py
 ├── models.py
+├── reconciliation.py
 ├── state_machine.py
 ├── providers/
 │   ├── __init__.py
@@ -588,9 +620,19 @@ src/clinicops/billing/
 │   ├── subscription_repository.py
 │   ├── provider_operation_repository.py
 │   └── billing_webhook_event_repository.py
-└── services/
+├── services/
+│   ├── __init__.py
+│   ├── create_subscription.py
+│   ├── get_subscription.py
+│   ├── schedule_plan_change.py
+│   └── schedule_cancellation.py
+└── webhooks/
     ├── __init__.py
-    └── create_subscription.py
+    ├── contracts.py
+    ├── handlers.py
+    ├── ingest.py
+    ├── process.py
+    └── signatures.py
 ```
 
 The implemented HTTP composition for billing lives under the repository's
@@ -628,6 +670,9 @@ state_machine.py
 models.py
     -> SQLAlchemy billing persistence models and PostgreSQL enum bindings
 
+reconciliation.py
+    -> billing reconciliation against provider state
+
 repositories/
     -> billing persistence queries, row locks, flushes, and known-conflict
        translation
@@ -653,33 +698,22 @@ providers/idempotency.py
 providers/periods.py
     -> calendar-accurate monthly and yearly period calculation
 
-billing/services/create_subscription.py
-    -> multi-transaction tenant subscription-creation orchestration
-    -> client idempotency replay
-    -> durable provider-operation reservation and claiming
-    -> provider calls outside database transactions
-    -> persistence of provider customer and subscription results
+billing/services/
+    -> subscription creation, read, scheduled plan change, and scheduled
+       cancellation orchestration
 
-api/v1/billing/dependencies.py
-    -> Idempotency-Key extraction and validation
-    -> BILLING_MANAGE authorization dependency
-    -> application-scoped PaymentProvider resolution
-    -> subscription service construction
+billing/webhooks/
+    -> webhook authentication, durable ingestion, and processing
 
-api/v1/billing/routes.py
-    -> tenant-scoped POST subscription route
-    -> 201 first execution and 200 successful replay
-
-api/v1/billing/schemas.py
-    -> public request and response models
-    -> exclusion of provider identifiers from the HTTP contract
+api/v1/billing/
+    -> tenant-scoped billing HTTP composition
 ```
 
-Billing currently uses one `models.py` file because the four mapped entities
+Billing currently uses one `models.py` file because the mapped entities
 belong to the same billing persistence boundary and remain manageable
 together.
 
-The repository package is justified by the four distinct persistence
+The repository package is justified by distinct persistence
 responsibilities:
 
 ```text
@@ -705,11 +739,9 @@ The provider package does not access SQLAlchemy sessions or billing
 repositories. Database transaction orchestration belongs to billing
 application services.
 
-The billing subscription service is an application orchestrator rather than a
-single-transaction domain service.
-
-It intentionally owns multiple commits because provider calls must occur
-without an open database transaction.
+Billing application services that call the provider intentionally own
+multiple commits because provider calls must occur without an open database
+transaction.
 
 The orchestrator reserves and claims durable provider operations, commits,
 calls the provider, and then reloads and locks persisted state before applying
@@ -722,22 +754,21 @@ The payment provider remains application-scoped because the deterministic
 fake adapter stores in-memory idempotency and ambiguous-outcome state across
 requests.
 
-The billing module now contains an implemented provider abstraction, fake
-adapter, subscription-creation service, and versioned HTTP composition. It
-does not currently contain:
+Billing is complete for its approved synchronous and local-provider scope.
+It does not currently contain:
 
 ```text
-plan-change service and route
-cancellation service and route
-billing jobs
-billing workers
-webhook HTTP handlers
+durable billing jobs
+worker-backed webhook processing
+worker-backed reconciliation
 real provider adapters
 entitlement enforcement
+invoice lifecycles
 ```
 
-Those capabilities are added only when the corresponding application,
-transport, or background-processing responsibilities are implemented.
+Background Jobs will later operationalize webhook processing and
+reconciliation. Real provider adapters, entitlements, and invoices remain
+intentionally deferred beyond the current release.
 
 Billing models are registered centrally through:
 
@@ -760,7 +791,7 @@ It does not introduce a parallel `src/clinicops/billing/api/` tree.
 
 ---
 
-## 10. Naming Guidance
+## 11. Naming Guidance
 
 Use entity-oriented names for persistent models and transport schemas.
 
@@ -770,7 +801,7 @@ Examples:
 models/tenant.py
 models/membership.py
 schemas/invitation.py
-schemas/appointment.py
+schemas/patient.py
 ```
 
 Use use-case-oriented names for application services.
@@ -791,7 +822,7 @@ Examples:
 ```text
 repositories/tenant_repository.py
 repositories/membership_repository.py
-repositories/payment_event_repository.py
+repositories/billing_webhook_event_repository.py
 ```
 
 Avoid vague filenames such as:
@@ -807,7 +838,7 @@ unless their responsibility is explicit and narrow.
 
 ---
 
-## 11. Dependency Direction
+## 12. Dependency Direction
 
 The intended dependency direction is:
 
@@ -839,7 +870,7 @@ Rules:
 
 ---
 
-## 12. Testing Structure
+## 13. Testing Structure
 
 ### `tests/unit/`
 
@@ -850,8 +881,7 @@ Examples:
 - password hashing;
 - ownership-transfer validation;
 - invitation expiration;
-- appointment transitions;
-- invoice transitions;
+- subscription lifecycle rules;
 - retry calculations;
 - HMAC verification.
 
@@ -865,24 +895,27 @@ Examples:
 
 - login and token refresh;
 - invitation acceptance transactions;
-- tenant-scoped patient access;
+- tenant-scoped patient access once Patients lands;
 - duplicate webhook handling;
-- background job acquisition;
-- audit persistence.
+- background job acquisition once Jobs lands;
+- audit persistence once Durable Audit Logs lands.
 
 ---
 
 ### `tests/security/`
 
-Makes high-risk boundaries explicit.
+Target location for high-risk boundary tests once that organization is useful.
 
 Examples:
 
 - cross-tenant access rejection;
 - RBAC enforcement;
 - invalid webhook signature rejection;
-- revoked token behavior;
-- Platform Admin boundary checks.
+- revoked token behavior.
+
+The repository currently places many of these concerns under `tests/unit/` and
+`tests/integration/`. A dedicated `tests/security/` directory remains a target
+organization, not a claim about the current tree.
 
 ---
 
@@ -894,7 +927,7 @@ Factories must not hide important relationships that are relevant to the behavio
 
 ---
 
-## 13. Structures Intentionally Avoided Initially
+## 14. Structures Intentionally Avoided Initially
 
 Do not introduce without a concrete need:
 
@@ -915,7 +948,7 @@ Explicit code is preferred over speculative abstraction.
 
 ---
 
-## 14. Evolution Rule
+## 15. Evolution Rule
 
 A file should become a package when:
 
