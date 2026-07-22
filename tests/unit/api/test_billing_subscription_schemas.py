@@ -123,6 +123,4 @@ def test_subscription_response_is_immutable() -> None:
         ValidationError,
         match="Instance is frozen",
     ):
-        response.price_code = (
-            "professional_monthly"
-        )
+        response.price_code = "professional_monthly"
