@@ -35,6 +35,10 @@ class CreateBillingSubscriptionRequest(BaseModel):
     price_code: PriceCode
 
 
+class ScheduleBillingPlanChangeRequest(CreateBillingSubscriptionRequest):
+    """Request one scheduled subscription price change."""
+
+
 class BillingSubscriptionResponse(BaseModel):
     """Public representation of a tenant billing subscription."""
 

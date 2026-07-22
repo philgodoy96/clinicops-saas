@@ -237,3 +237,43 @@ class BillingSubscriptionNotFoundError(BillingError):
 
     def __init__(self) -> None:
         super().__init__("No billing subscription exists for the authorized tenant.")
+
+
+class BillingPlanChangeSamePriceError(BillingError):
+    """Raised when the requested price is already active."""
+
+    code = "billing_plan_change_same_price"
+    public_message = "The requested billing price is already active."
+
+    def __init__(self) -> None:
+        super().__init__("A plan change cannot target the active price code.")
+
+
+class BillingPlanChangeAlreadyPendingError(BillingError):
+    """Raised when another scheduled price change already exists."""
+
+    code = "billing_plan_change_already_pending"
+    public_message = "A billing plan change is already pending."
+
+    def __init__(self) -> None:
+        super().__init__("The subscription already has a pending price code.")
+
+
+class BillingSubscriptionNotActiveError(BillingError):
+    """Raised when a mutation requires an active subscription."""
+
+    code = "billing_subscription_not_active"
+    public_message = "The billing subscription is not active."
+
+    def __init__(self) -> None:
+        super().__init__("A billing plan change requires an active subscription.")
+
+
+class BillingSubscriptionCancellationPendingError(BillingError):
+    """Raised when cancellation prevents another billing mutation."""
+
+    code = "billing_subscription_cancellation_pending"
+    public_message = "The billing subscription is scheduled for cancellation."
+
+    def __init__(self) -> None:
+        super().__init__("A plan change cannot be scheduled while cancel_at_period_end is enabled.")
