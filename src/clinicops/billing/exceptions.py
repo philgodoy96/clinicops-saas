@@ -362,3 +362,48 @@ class BillingWebhookProviderNotFoundError(BillingError):
         provider: str,
     ) -> None:
         super().__init__(f"Unsupported billing webhook provider {provider!r}.")
+
+
+class BillingWebhookEventNotFoundError(BillingError):
+    """Raised when a persisted webhook event cannot be found."""
+
+    code = "billing_webhook_event_not_found"
+    public_message = "The billing webhook event was not found."
+
+    def __init__(self) -> None:
+        super().__init__("The billing webhook event could not be found.")
+
+
+class BillingWebhookEventProcessingConflictError(BillingError):
+    """Raised when another worker owns the event processing claim."""
+
+    code = "billing_webhook_event_processing_conflict"
+    public_message = "The billing webhook event is already being processed."
+
+    def __init__(self) -> None:
+        super().__init__("The billing webhook event is already in the processing state.")
+
+
+class BillingWebhookEventTerminalFailureError(BillingError):
+    """Replay a terminal processing failure without reprocessing."""
+
+    code = "billing_webhook_event_terminal_failure"
+    public_message = "The billing webhook event cannot be processed."
+
+    def __init__(
+        self,
+        *,
+        failure_code: str,
+    ) -> None:
+        normalized_failure_code = failure_code.strip()
+
+        if not normalized_failure_code:
+            raise ValueError("The terminal webhook failure code must not be empty.")
+
+        self.failure_code = normalized_failure_code
+
+        super().__init__(
+            "The billing webhook event has a persisted "
+            "terminal failure: "
+            f"{normalized_failure_code}."
+        )
