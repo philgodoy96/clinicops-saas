@@ -348,3 +348,17 @@ class BillingWebhookEventConflictError(BillingError):
             f"{provider_event_id!r} was reused with "
             "different raw payload bytes."
         )
+
+
+class BillingWebhookProviderNotFoundError(BillingError):
+    """Raised when a webhook route names an unsupported provider."""
+
+    code = "billing_webhook_provider_not_found"
+    public_message = "The billing webhook provider was not found."
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+    ) -> None:
+        super().__init__(f"Unsupported billing webhook provider {provider!r}.")

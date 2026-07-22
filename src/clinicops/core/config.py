@@ -11,7 +11,9 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_LOCAL_AUTH_SIGNING_KEY = "local-development-signing-key-change-me"
+DEFAULT_LOCAL_BILLING_WEBHOOK_SECRET = "local-billing-webhook-secret-change-me"
 MINIMUM_AUTH_SIGNING_KEY_BYTES = 32
+MINIMUM_BILLING_WEBHOOK_SECRET_BYTES = 32
 
 
 class Environment(StrEnum):
@@ -56,6 +58,17 @@ class Settings(BaseSettings):
     auth_issuer: NonEmptySetting = "clinicops"
     auth_audience: NonEmptySetting = "clinicops-api"
     auth_signing_key: SecretStr = SecretStr(DEFAULT_LOCAL_AUTH_SIGNING_KEY)
+    billing_webhook_secret: SecretStr = SecretStr(DEFAULT_LOCAL_BILLING_WEBHOOK_SECRET)
+    billing_webhook_signature_tolerance_seconds: int = Field(
+        default=300,
+        ge=0,
+        le=3600,
+    )
+    billing_webhook_max_payload_bytes: int = Field(
+        default=256 * 1024,
+        ge=1,
+        le=1024 * 1024,
+    )
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
@@ -66,15 +79,25 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def validate_authentication_configuration(self) -> Self:
-        """Reject weak or deployment-unsafe authentication secrets."""
+    def validate_secret_configuration(self) -> Self:
+        """Reject weak or deployment-unsafe application secrets."""
 
         signing_key = self.auth_signing_key.get_secret_value()
+        webhook_secret = self.billing_webhook_secret.get_secret_value()
 
         if len(signing_key.encode("utf-8")) < MINIMUM_AUTH_SIGNING_KEY_BYTES:
             raise ValueError(
                 "Authentication signing key must contain "
-                f"at least {MINIMUM_AUTH_SIGNING_KEY_BYTES} UTF-8 bytes."
+                f"at least {MINIMUM_AUTH_SIGNING_KEY_BYTES} "
+                "UTF-8 bytes."
+            )
+
+        if len(webhook_secret.encode("utf-8")) < MINIMUM_BILLING_WEBHOOK_SECRET_BYTES:
+            raise ValueError(
+                "Billing webhook secret must contain "
+                f"at least "
+                f"{MINIMUM_BILLING_WEBHOOK_SECRET_BYTES} "
+                "UTF-8 bytes."
             )
 
         deployed_environments = {
@@ -82,14 +105,20 @@ class Settings(BaseSettings):
             Environment.PRODUCTION,
         }
 
-        if (
-            self.environment in deployed_environments
-            and signing_key == DEFAULT_LOCAL_AUTH_SIGNING_KEY
-        ):
-            raise ValueError(
-                "The default local authentication signing key "
-                "cannot be used in a deployed environment."
-            )
+        if self.environment in deployed_environments:
+            if signing_key == DEFAULT_LOCAL_AUTH_SIGNING_KEY:
+                raise ValueError(
+                    "The default local authentication "
+                    "signing key cannot be used in a "
+                    "deployed environment."
+                )
+
+            if webhook_secret == DEFAULT_LOCAL_BILLING_WEBHOOK_SECRET:
+                raise ValueError(
+                    "The default local billing webhook "
+                    "secret cannot be used in a deployed "
+                    "environment."
+                )
 
         return self
 

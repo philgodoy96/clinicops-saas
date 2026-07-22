@@ -11,6 +11,7 @@ from clinicops.core.config import (
 from tests.conftest import IsolatedSettings
 
 SECURE_SIGNING_KEY = "test-signing-key-with-at-least-32-bytes"
+SECURE_WEBHOOK_SECRET = "test-billing-webhook-secret-with-32-bytes"
 
 
 def build_settings(**overrides: Any) -> Settings:
@@ -88,6 +89,7 @@ def test_production_accepts_explicit_secure_signing_key() -> None:
     settings = build_settings(
         environment=Environment.PRODUCTION,
         auth_signing_key=SecretStr(SECURE_SIGNING_KEY),
+        billing_webhook_secret=SecretStr(SECURE_WEBHOOK_SECRET),
     )
 
     assert settings.environment is Environment.PRODUCTION
