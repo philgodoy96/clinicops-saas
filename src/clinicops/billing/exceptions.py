@@ -407,3 +407,28 @@ class BillingWebhookEventTerminalFailureError(BillingError):
             "terminal failure: "
             f"{normalized_failure_code}."
         )
+
+
+class BillingWebhookEventRetryableFailureError(BillingError):
+    """Signal a durably persisted retryable processing failure."""
+
+    code = "billing_webhook_event_retryable_failure"
+    public_message = "The billing webhook event could not be processed yet."
+
+    def __init__(
+        self,
+        *,
+        failure_code: str,
+    ) -> None:
+        normalized_failure_code = failure_code.strip()
+
+        if not normalized_failure_code:
+            raise ValueError("The retryable webhook failure code must not be empty.")
+
+        self.failure_code = normalized_failure_code
+
+        super().__init__(
+            "The billing webhook event has a retryable "
+            "processing failure: "
+            f"{normalized_failure_code}."
+        )

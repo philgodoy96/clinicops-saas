@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from clinicops.billing.enums import BillingProvider
 from clinicops.billing.exceptions import (
     BillingProviderSubscriptionAlreadyLinkedError,
     BillingSubscriptionAlreadyExistsError,
@@ -36,6 +37,25 @@ class SubscriptionRepository:
         statement = (
             select(Subscription)
             .where(Subscription.tenant_id == tenant_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        return session.scalar(statement)
+
+    def get_by_provider_subscription_id_for_update(
+        self,
+        session: Session,
+        *,
+        provider: BillingProvider,
+        provider_subscription_id: str,
+    ) -> Subscription | None:
+        statement = (
+            select(Subscription)
+            .where(
+                Subscription.provider == provider,
+                Subscription.provider_subscription_id == provider_subscription_id,
+            )
             .with_for_update()
             .execution_options(populate_existing=True)
         )
