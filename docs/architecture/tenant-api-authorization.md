@@ -43,6 +43,7 @@ POST /api/v1/tenants/{tenant_id}/invitations/{invitation_id}/revoke
 
 GET  /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription
+POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
 ```
 
 ## Global tenant discovery
@@ -194,6 +195,7 @@ Current route mapping:
 | Revoke tenant invitation | `INVITATION_REVOKE` |
 | Read billing subscription | `BILLING_READ` |
 | Create billing subscription | `BILLING_MANAGE` |
+| Schedule billing plan change | `BILLING_MANAGE` |
 
 The permission result is represented by:
 
@@ -461,11 +463,13 @@ BILLING_READ
     -> inspect the current local subscription state
 
 BILLING_MANAGE
-    -> execute billing mutations such as subscription creation
+    -> create a subscription
+    -> schedule a plan change
+    -> future cancellation mutations
 ```
 
-Future plan-change and cancellation mutations will also require
-`BILLING_MANAGE`.
+Administrators can inspect billing state but cannot mutate billing lifecycle
+state.
 
 ### Billing permission matrix
 
@@ -600,10 +604,101 @@ membership lacks BILLING_MANAGE
     -> 403
 ```
 
+## Billing plan-change mutation
+
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+```
+
+Requires:
+
+```text
+TenantPermission.BILLING_MANAGE
+```
+
+The route uses the existing tenant-context dependency and permission policy.
+
+It does not authorize through a direct role comparison in the route.
+
+### Authorization flow
+
+```text
+Bearer access token
+    -> resolve authenticated user and session
+    -> load tenant from path tenant_id
+    -> load current membership
+    -> validate tenant and membership state
+    -> require BILLING_MANAGE
+    -> validate Idempotency-Key
+    -> execute scheduled plan-change workflow
+```
+
+### Request body trust boundary
+
+The request body cannot control:
+
+```text
+tenant identity
+provider subscription identity
+provider operation keys
+effective date
+current subscription state
+currency
+amount
+billing interval independently from price_code
+provider state version
+```
+
+The server resolves tenant identity from the path and the authorized tenant
+context.
+
+The server resolves the target price from the billing catalog.
+
+The server derives the effective date from the persisted
+`current_period_end`.
+
+### Expected authorization and lifecycle outcomes
+
+```text
+tenant does not exist
+    -> 404
+
+authenticated user has no membership
+    -> 404
+
+tenant is disabled
+    -> 403
+
+membership is disabled
+    -> 403
+
+membership lacks BILLING_MANAGE
+    -> 403
+
+tenant has no subscription
+    -> 404 billing_subscription_not_found
+
+authorized active subscription
+    -> workflow proceeds
+```
+
+### Public response boundary
+
+The public plan-change response does not expose:
+
+```text
+provider subscription IDs
+provider operation IDs
+provider references
+idempotency fingerprints
+provider failure payloads
+the internal replay flag
+```
+
 ### Deferred billing mutations
 
-Plan changes and cancellations are still deferred. Their eventual mutations
-will also require `BILLING_MANAGE`.
+Cancellations remain deferred. Their eventual mutations will also require
+`BILLING_MANAGE`.
 
 ## Authorization defense in depth
 
@@ -788,7 +883,6 @@ membership role changes
 membership activation or deactivation
 membership removal
 ownership transfer
-billing plan changes
 billing cancellations
 patients
 professionals
@@ -802,10 +896,11 @@ Membership administration and ownership transfer require dedicated
 transactional invariants, including protection of the tenant's single active
 owner.
 
-Subscription creation is the only billing mutation exposed through the current
-tenant API. Billing subscription read is available to callers with
-`BILLING_READ`. Plan changes and cancellations remain deferred.
+Subscription creation and scheduled plan changes are the billing mutations
+exposed through the current tenant API. Billing subscription read is available
+to callers with `BILLING_READ`. Cancellations remain deferred.
 
 Those remaining capabilities are addressed in subsequent milestones instead of
 being partially introduced into the current tenant read, invitation-
-administration, subscription-read, and subscription-creation boundary.
+administration, subscription-read, subscription-creation, and plan-change
+boundary.
