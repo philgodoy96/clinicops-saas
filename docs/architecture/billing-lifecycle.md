@@ -46,12 +46,23 @@ The implemented billing foundation now establishes:
 - `BILLING_READ` authorization;
 - provider-independent public billing responses;
 - explicit not-found behavior for tenants without a subscription;
-- PostgreSQL-backed API integration coverage for tenant isolation.
+- PostgreSQL-backed API integration coverage for tenant isolation;
+- scheduled billing plan changes;
+- tenant-scoped plan-change mutations;
+- `BILLING_MANAGE` authorization;
+- required client `Idempotency-Key` handling;
+- durable `CHANGE_PLAN` provider operations;
+- provider calls outside database transactions;
+- persisted `pending_price_code`;
+- successful idempotent replay;
+- retryable, terminal, and ambiguous provider outcomes;
+- PostgreSQL integration and concurrency coverage.
 
 This document distinguishes the implemented domain, persistence,
-fake-provider, subscription-creation, and subscription-read workflow
-foundations from the webhook ingestion, entitlement, worker, plan-change,
-cancellation, and real-provider capabilities planned for later milestones.
+fake-provider, subscription-creation, subscription-read, and scheduled
+plan-change workflow foundations from the webhook ingestion, entitlement,
+worker, cancellation, and real-provider capabilities planned for later
+milestones.
 
 ## Module Ownership
 
@@ -94,11 +105,13 @@ The billing module currently owns:
 - required client `Idempotency-Key` extraction and validation at the HTTP
   boundary;
 - durable `CREATE_CUSTOMER` and `CREATE_SUBSCRIPTION` reservation and claim
-  orchestration.
+  orchestration;
+- tenant-scoped scheduled plan-change application orchestration;
+- FastAPI billing plan-change routes;
+- durable `CHANGE_PLAN` reservation and claim orchestration.
 
 The current billing implementation does not own:
 
-- plan-change application services and API;
 - subscription-cancellation application services and API;
 - real payment-provider integrations;
 - stale in-progress recovery;
@@ -1448,6 +1461,295 @@ and:
 tenant has a persisted subscription in a specific state
 ```
 
+## Implemented Scheduled Plan Changes
+
+ClinicOps exposes one tenant-scoped plan-change mutation:
+
+```text
+POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
+```
+
+The request body is:
+
+```json
+{
+  "price_code": "professional_monthly"
+}
+```
+
+The request must include:
+
+```text
+Idempotency-Key: <opaque client-generated key>
+```
+
+The mutation requires:
+
+```text
+TenantPermission.BILLING_MANAGE
+```
+
+The current authorization policy grants billing management to tenant owners.
+
+Administrators retain billing read access but cannot schedule billing changes.
+Staff members do not receive billing administration permissions.
+
+## Scheduled Plan-Change Semantics
+
+A plan change is scheduled for the current subscription period boundary.
+
+The active local billing state remains unchanged:
+
+```text
+price_code
+plan
+billing_interval
+currency
+unit_amount
+current_period_start
+current_period_end
+```
+
+The confirmed future target is stored as:
+
+```text
+pending_price_code
+```
+
+Example:
+
+```text
+Before:
+    price_code = starter_monthly
+    pending_price_code = null
+
+After scheduling:
+    price_code = starter_monthly
+    pending_price_code = professional_monthly
+```
+
+The target price is not promoted to the active price during this workflow.
+
+Application of the pending target at renewal is intentionally deferred to
+future webhook or reconciliation processing.
+
+## Plan-Change Eligibility
+
+A plan change may be scheduled only when:
+
+- a persisted subscription exists for the tenant;
+- the subscription status is `active`;
+- `cancel_at_period_end` is false;
+- no `pending_price_code` already exists;
+- the target price exists in the billing catalog;
+- the target price differs from the active `price_code`.
+
+Conflicts are explicit:
+
+```text
+target equals active price
+    -> 409 Conflict
+
+subscription is not active
+    -> 409 Conflict
+
+subscription is scheduled for cancellation
+    -> 409 Conflict
+
+another plan change is already pending
+    -> 409 Conflict
+```
+
+A new idempotency key cannot replace an existing pending target.
+
+Pending-plan replacement and pending-plan cancellation are intentionally
+deferred.
+
+## Durable Plan-Change Operation
+
+Every provider-side plan change is represented by:
+
+```text
+ProviderOperationType.CHANGE_PLAN
+```
+
+The uniqueness boundary remains:
+
+```text
+tenant_id + operation_type + idempotency_key
+```
+
+The internal provider key is derived from the persisted operation UUID:
+
+```text
+clinicops:<provider_operation_uuid>
+```
+
+The command fingerprint includes:
+
+```text
+provider_subscription_id
+target_price_code
+```
+
+Client-idempotency behavior:
+
+```text
+same tenant + same client key + same target
+    -> resume or replay
+
+same tenant + same client key + different target
+    -> 409 Conflict
+
+new client key + existing pending target
+    -> 409 Conflict
+```
+
+A successful replay is reconstructed from the persisted `Subscription` row.
+
+The public HTTP response does not expose:
+
+- provider operation IDs;
+- provider operation keys;
+- provider references;
+- provider subscription IDs;
+- request fingerprints;
+- the internal `replayed` flag.
+
+## Plan-Change Transaction Boundaries
+
+The application orchestrator intentionally owns multiple commits.
+
+The workflow is:
+
+```text
+Transaction A
+    -> lock Subscription
+    -> validate lifecycle state
+    -> load or reserve CHANGE_PLAN
+    -> validate client fingerprint
+    -> claim operation as in_progress
+    -> commit
+
+Provider call
+    -> no database transaction open
+
+Transaction B
+    -> reload and lock ProviderOperation
+    -> reload and lock Subscription
+    -> revalidate local state
+    -> validate provider result
+    -> persist pending_price_code
+    -> persist provider_state_version
+    -> mark operation succeeded
+    -> commit
+```
+
+The provider result must confirm:
+
+- the same provider subscription;
+- the requested target price;
+- the current local period boundary as the effective date;
+- a provider state version greater than the persisted version.
+
+The local active price and current period remain unchanged after the provider
+confirms the scheduled target.
+
+## Fake Provider Plan-Change Behavior
+
+The fake provider stores:
+
+```text
+pending_price_code
+pending_effective_at
+```
+
+It preserves the currently active provider price and period.
+
+The same provider operation key replays the same stored result.
+
+A different provider operation key is rejected while another plan change is
+pending.
+
+The fake provider supports:
+
+- successful execution;
+- retryable pre-mutation failure;
+- terminal rejection;
+- ambiguous success;
+- same-key success replay;
+- same-key terminal failure replay.
+
+An ambiguous success mutates provider state once, raises an ambiguous outcome
+to the caller, and then replays the stored result when retried with the same
+provider operation key.
+
+## Plan-Change Failure Persistence
+
+Retryable and ambiguous provider outcomes are persisted as:
+
+```text
+failed_retryable
+```
+
+The API returns:
+
+```text
+503 Service Unavailable
+```
+
+A later request with the same client key may reclaim the operation and retry
+using the same provider operation key.
+
+Terminal provider outcomes are persisted as:
+
+```text
+failed_terminal
+```
+
+The API returns:
+
+```text
+409 Conflict
+```
+
+The same client key does not call the provider again after a terminal outcome.
+
+Business conflicts discovered before the provider call do not create an
+external side effect.
+
+Business conflicts discovered after the provider call are persisted as a
+terminal operation failure.
+
+## Plan-Change Concurrency Guarantees
+
+The implementation combines:
+
+- PostgreSQL row-level locks;
+- provider-operation uniqueness;
+- client command fingerprints;
+- committed `in_progress` ownership;
+- provider-side idempotency;
+- one pending target on the local subscription.
+
+Concurrent same-key requests produce one logical plan change.
+
+The competing request may:
+
+- replay the completed result; or
+- receive an operation-in-progress conflict.
+
+Concurrent requests using different keys cannot establish two active pending
+targets.
+
+One target wins and the other request is rejected by local lifecycle
+validation or provider state validation.
+
+The implementation provides at-least-once provider attempts with idempotent
+effect boundaries.
+
+It does not claim exactly-once execution.
+
 ## Durable Workflow Decomposition
 
 A single client subscription request may create two durable outbound
@@ -1707,12 +2009,12 @@ Implemented tenant billing routes currently provide:
 ```text
 create subscription
 read subscription
+schedule price change
 ```
 
 Future tenant billing routes are expected to provide:
 
 ```text
-schedule price change
 schedule period-end cancellation
 ```
 
@@ -1734,7 +2036,7 @@ STAFF
     -> no billing administration permission
 ```
 
-Plan-change and cancellation API surfaces remain deferred.
+Cancellation API surfaces remain deferred.
 
 ## Planned Background Processing Boundary
 
@@ -1847,7 +2149,24 @@ Coverage includes:
 - cross-tenant isolation;
 - missing-subscription Problem Details;
 - exact `billing_subscription_not_found` error code;
-- PostgreSQL-backed HTTP integration coverage.
+- PostgreSQL-backed HTTP integration coverage;
+- persisted `pending_price_code`;
+- active price and current period preservation;
+- durable `CHANGE_PLAN` success;
+- successful same-key replay;
+- same-key fingerprint conflict;
+- new-key pending-target conflict;
+- inactive subscription rejection;
+- cancellation-pending rejection;
+- ambiguous provider recovery;
+- terminal provider failure replay;
+- PostgreSQL-backed workflow integration;
+- HTTP integration;
+- tenant-scoped mutation;
+- independent database sessions per concurrent thread;
+- concurrent same-key requests;
+- concurrent different-key requests;
+- scoped cleanup by test-owned tenant IDs.
 
 Migration parity is checked through:
 
@@ -1856,7 +2175,7 @@ alembic upgrade head
 alembic check
 ```
 
-Real-provider execution, webhook ingestion, plan-change, cancellation, and
+Real-provider execution, webhook ingestion, cancellation, and
 background-worker tests are added only when those implementation boundaries
 exist.
 
@@ -2002,6 +2321,39 @@ The domain foundation establishes these invariants:
 
 55. Billing reads do not require an idempotency key.
 
+56. Scheduled plan changes require `BILLING_MANAGE`.
+
+57. Every plan-change request requires a validated client
+    `Idempotency-Key`.
+
+58. Every provider-side plan change is represented by a durable
+    `CHANGE_PLAN` operation.
+
+59. The active subscription price is not modified when a future plan change
+    is scheduled.
+
+60. The confirmed target is persisted in `pending_price_code`.
+
+61. A subscription may have at most one pending price change.
+
+62. A plan change cannot target the currently active price.
+
+63. A plan change cannot be scheduled for an inactive subscription.
+
+64. A plan change cannot be scheduled while cancellation is pending.
+
+65. Provider calls occur only after the durable operation claim commits.
+
+66. The provider result must advance `provider_state_version`.
+
+67. A successful replay does not call the provider again.
+
+68. A client key reused for another target is rejected.
+
+69. A new client key cannot replace an existing pending target.
+
+70. The workflow provides at-least-once attempts, not exactly-once execution.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
@@ -2009,21 +2361,27 @@ The following capabilities are intentionally deferred:
 - subscription history;
 - invoice history;
 - payment history;
-- plan-change orchestration and API;
-- cancellation orchestration and API;
+- immediate plan changes;
+- proration;
+- credits;
+- refunds;
+- invoice generation;
+- pending-plan replacement;
+- pending-plan cancellation;
+- automatic renewal application;
+- subscription cancellation;
+- webhook ingestion;
+- webhook processing;
 - provider reconciliation;
-- webhook ingestion and processing;
+- background retries;
+- stale `in_progress` recovery;
+- entitlement changes;
+- real payment-provider adapters;
 - background jobs;
-- entitlement enforcement;
-- real provider adapters;
 - live provider lookup during billing reads;
-- stale in-progress recovery;
-- scheduled retries;
 - background provider execution;
 - webhook HMAC verification;
 - payment credentials;
-- refunds;
-- proration;
 - immediate cancellation;
 - actual monetary processing;
 - payment-method collection;
@@ -2042,7 +2400,7 @@ The following capabilities are intentionally deferred:
 - production notification delivery.
 
 These capabilities are not required to establish the current domain,
-persistence, fake-provider, subscription-creation, and subscription-read
-workflow foundations. They will be added only when their data ownership,
-transaction, security, failure, and testing boundaries are implemented
-explicitly.
+persistence, fake-provider, subscription-creation, subscription-read, and
+scheduled plan-change workflow foundations. They will be added only when
+their data ownership, transaction, security, failure, and testing boundaries
+are implemented explicitly.
