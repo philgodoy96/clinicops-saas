@@ -15,6 +15,7 @@ from clinicops.billing.models import (
 from clinicops.db.base import Base
 from clinicops.identity.models import PasswordCredential, User, UserStatus
 from clinicops.invitations.models import Invitation, InvitationStatus
+from clinicops.jobs.models import BackgroundJob
 from clinicops.tenancy.models import (
     Membership,
     MembershipStatus,
@@ -28,6 +29,7 @@ metadata: MetaData = Base.metadata
 __all__ = [
     "AuthSession",
     "AuthSessionStatus",
+    "BackgroundJob",
     "BillingCustomer",
     "BillingWebhookEvent",
     "Invitation",
