@@ -573,6 +573,15 @@ src/clinicops/billing/
 ├── idempotency_keys.py
 ├── models.py
 ├── state_machine.py
+├── providers/
+│   ├── __init__.py
+│   ├── base.py
+│   ├── contracts.py
+│   ├── control.py
+│   ├── exceptions.py
+│   ├── fake.py
+│   ├── idempotency.py
+│   └── periods.py
 └── repositories/
     ├── __init__.py
     ├── billing_customer_repository.py
@@ -608,6 +617,27 @@ models.py
 repositories/
     -> billing persistence queries, row locks, flushes, and known-conflict
        translation
+
+providers/base.py
+    -> synchronous PaymentProvider Protocol
+
+providers/contracts.py
+    -> immutable provider request and result contracts
+
+providers/control.py
+    -> thread-safe scripted outcomes for local reliability tests
+
+providers/exceptions.py
+    -> provider boundary failures and retryability contracts
+
+providers/fake.py
+    -> deterministic thread-safe in-memory payment-provider adapter
+
+providers/idempotency.py
+    -> provider operation keys and provider request fingerprints
+
+providers/periods.py
+    -> calendar-accurate monthly and yearly period calculation
 ```
 
 Billing currently uses one `models.py` file because the four mapped entities
@@ -624,19 +654,37 @@ ProviderOperation
 BillingWebhookEvent
 ```
 
-The billing module does not currently contain:
+The provider package is colocated with billing because its contracts are
+specific to the billing lifecycle and the persisted
+`ProviderOperationType` values.
+
+`PaymentProvider` defines the application-facing boundary.
+
+`FakePaymentProvider` is an adapter for deterministic local development and
+reliability testing. It is not a real payment integration.
+
+Fake-provider controls remain outside the request contracts so production
+application code cannot depend on test-only failure flags.
+
+The provider package does not access SQLAlchemy sessions or billing
+repositories. Database transaction orchestration belongs to future billing
+application services.
+
+The billing module now contains an implemented provider abstraction and fake
+adapter. It does not currently contain:
 
 ```text
 api/
 services/
-providers/
 jobs/
 workers/
 ```
 
 Those directories are added only when the corresponding application,
-provider, transport, or background-processing responsibilities are
-implemented.
+transport, or background-processing responsibilities are implemented.
+
+Real provider adapters and webhook HTTP handlers are also not part of the
+current billing layout.
 
 Billing models are registered centrally through:
 
