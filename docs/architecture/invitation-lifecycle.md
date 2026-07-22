@@ -526,7 +526,7 @@ Require active user
 Create tenant membership
 ```
 
-No password is required because credential verification belongs to a future authenticated delivery or API boundary.
+No password is required because the invitation bearer token is the credential for acceptance. Credential verification for subsequent authenticated API access remains the responsibility of the authentication session boundary.
 
 The domain service still guarantees that the membership can only be created for the user whose canonical email matches the invitation.
 
@@ -877,7 +877,7 @@ These exceptions:
 - do not expose token digests;
 - do not expose persistence internals.
 
-A future API boundary will map application failures to transport-specific responses.
+The HTTP API maps application failures to transport-specific Problem Details responses.
 
 ## Security Boundaries
 
@@ -936,25 +936,53 @@ If tenant-level invitation throughput becomes significant, locking may evolve to
 
 Caching is intentionally deferred because invitation lifecycle and token validity are consistency-sensitive security data.
 
+## HTTP Transport
+
+Invitation lifecycle operations are exposed through the versioned HTTP API.
+
+Public acceptance:
+
+```text
+POST /api/v1/invitations/accept
+```
+
+Acceptance does not require an access-token bearer credential. The opaque invitation token is the credential for that single workflow.
+
+Authenticated tenant invitation operations:
+
+```text
+GET  /api/v1/tenants/{tenant_id}/invitations
+POST /api/v1/tenants/{tenant_id}/invitations
+POST /api/v1/tenants/{tenant_id}/invitations/{invitation_id}/revoke
+```
+
+These tenant-scoped routes require an authenticated session, active membership in the target tenant, and the corresponding invitation permission.
+
+Implemented HTTP behavior covers:
+
+- tenant-scoped invitation issuance;
+- invitation acceptance transport;
+- invitation revocation;
+- authenticated tenant invitation listing;
+- invitation security, expiration, replay, and concurrency enforcement at the application and persistence boundaries.
+
+Issuance returns the plaintext invitation token exactly once after commit. Listing and revocation responses never include the plaintext token or token digest.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
 
-- invitation HTTP endpoints;
-- authenticated acceptance transport;
 - email provider integration;
 - email templates;
 - delivery retries;
 - reminder emails;
 - background expiration cleanup;
-- invitation listing APIs;
 - bulk invitations;
 - resend operations;
 - configurable expiration per tenant;
 - invitation audit logs;
 - membership reactivation;
 - post-onboarding role changes;
-- tenant permission middleware;
 - owner invitations;
 - ownership transfer through invitations;
 - invitation caching.
