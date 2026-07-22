@@ -277,3 +277,13 @@ class BillingSubscriptionCancellationPendingError(BillingError):
 
     def __init__(self) -> None:
         super().__init__("A plan change cannot be scheduled while cancel_at_period_end is enabled.")
+
+
+class BillingSubscriptionAlreadyCanceledError(BillingError):
+    """Raised when a canceled subscription cannot be mutated."""
+
+    code = "billing_subscription_already_canceled"
+    public_message = "The billing subscription is already canceled."
+
+    def __init__(self) -> None:
+        super().__init__("A cancellation cannot be scheduled for an already-canceled subscription.")
