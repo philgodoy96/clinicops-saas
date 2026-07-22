@@ -192,3 +192,38 @@ class BillingWebhookEventAlreadyExistsError(BillingError):
 
     code = "billing_webhook_event_already_exists"
     public_message = "The billing webhook event has already been received."
+
+
+class MissingIdempotencyKeyError(BillingError):
+    """Raised when a billing mutation omits its client idempotency key."""
+
+    code = "missing_idempotency_key"
+    public_message = "The Idempotency-Key header is required."
+
+    def __init__(self) -> None:
+        super().__init__("The billing mutation did not include an Idempotency-Key header.")
+
+
+class BillingIdempotencyConflictError(BillingError):
+    """Raised when one client key is reused for another command."""
+
+    code = "billing_idempotency_conflict"
+    public_message = "The idempotency key was reused for a different billing request."
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The persisted billing command fingerprint does not match the current request."
+        )
+
+
+class ProviderOperationInProgressError(BillingError):
+    """Raised when another request owns provider execution."""
+
+    code = "provider_operation_in_progress"
+    public_message = "The billing operation is already in progress."
+
+    def __init__(self) -> None:
+        super().__init__(
+            "A provider operation with the same tenant, type, "
+            "and idempotency key is already in progress."
+        )
