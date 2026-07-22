@@ -72,3 +72,9 @@ class BillingWebhookProcessingOutcome(StrEnum):
 
     APPLIED = "applied"
     IGNORED = "ignored"
+
+
+class BillingReconciliationOutcome(StrEnum):
+    IN_SYNC = "in_sync"
+    REPAIRED = "repaired"
+    IGNORED = "ignored"

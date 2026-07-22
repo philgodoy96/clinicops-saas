@@ -432,3 +432,97 @@ class BillingWebhookEventRetryableFailureError(BillingError):
             "processing failure: "
             f"{normalized_failure_code}."
         )
+
+
+class BillingReconciliationSubscriptionNotFoundError(BillingError):
+    """Raised when the trusted local subscription does not exist."""
+
+    code = "billing_reconciliation_subscription_not_found"
+    public_message = "The billing subscription was not found."
+
+    def __init__(self) -> None:
+        super().__init__("The local billing subscription could not be found for reconciliation.")
+
+
+class BillingReconciliationProviderStateNotFoundError(BillingError):
+    """Raised when the provider cannot resolve subscription state."""
+
+    code = "billing_reconciliation_provider_state_not_found"
+    public_message = "The provider subscription state was not found."
+
+    def __init__(
+        self,
+        *,
+        provider_subscription_id: str,
+    ) -> None:
+        super().__init__(
+            f"The provider did not return subscription state for {provider_subscription_id!r}."
+        )
+
+
+class BillingReconciliationProviderIdentityMismatchError(BillingError):
+    """Raised when provider state does not match local identity."""
+
+    code = "billing_reconciliation_provider_identity_mismatch"
+    public_message = "The provider subscription identity does not match."
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The provider snapshot identity does not match the local subscription identity."
+        )
+
+
+class BillingReconciliationUnsupportedPriceError(BillingError):
+    """Raised when reconciliation cannot resolve a provider price."""
+
+    code = "billing_reconciliation_unsupported_price"
+    public_message = "The provider subscription price is not supported."
+
+    def __init__(
+        self,
+        *,
+        price_code: str,
+    ) -> None:
+        super().__init__(f"The provider snapshot references unsupported price code {price_code!r}.")
+
+
+class BillingReconciliationInvalidSnapshotError(BillingError):
+    """Raised when provider state violates the snapshot contract."""
+
+    code = "billing_reconciliation_invalid_snapshot"
+    public_message = "The provider subscription state is invalid."
+
+    def __init__(
+        self,
+        *,
+        internal_message: str,
+    ) -> None:
+        normalized_message = internal_message.strip()
+
+        if not normalized_message:
+            raise ValueError("The reconciliation snapshot error message must not be empty.")
+
+        super().__init__(normalized_message)
+
+
+class BillingReconciliationConflictError(BillingError):
+    """Raised when provider and local state cannot be repaired safely."""
+
+    code = "billing_reconciliation_conflict"
+    public_message = "The billing subscription state cannot be reconciled safely."
+
+    def __init__(
+        self,
+        *,
+        conflict_code: str,
+    ) -> None:
+        normalized_conflict_code = conflict_code.strip()
+
+        if not normalized_conflict_code:
+            raise ValueError("The reconciliation conflict code must not be empty.")
+
+        self.conflict_code = normalized_conflict_code
+
+        super().__init__(
+            f"Billing reconciliation reached an unsafe state conflict: {normalized_conflict_code}."
+        )
