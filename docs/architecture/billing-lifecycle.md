@@ -68,13 +68,25 @@ The implemented billing foundation now establishes:
 - pending plan-change cleanup;
 - successful idempotent replay;
 - retryable, terminal, and ambiguous provider outcomes;
-- PostgreSQL integration and concurrency coverage.
+- PostgreSQL integration and concurrency coverage;
+- authenticated billing webhook ingestion;
+- canonical provider event contracts;
+- HMAC-SHA256 signature verification;
+- signature timestamp tolerance;
+- raw payload size enforcement;
+- durable webhook receipt before acknowledgement;
+- immutable payload hashing;
+- provider event deduplication;
+- conflicting duplicate detection;
+- PostgreSQL concurrency protection;
+- unknown local subscription acceptance;
+- HTTP integration coverage.
 
 This document distinguishes the implemented domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
-plan-change, and scheduled cancellation workflow foundations from the
-webhook ingestion, entitlement, worker, and real-provider capabilities
-planned for later milestones.
+plan-change, scheduled cancellation, and webhook-ingestion workflow
+foundations from the webhook processing, entitlement, worker, and
+real-provider capabilities planned for later milestones.
 
 ## Module Ownership
 
@@ -123,7 +135,11 @@ The billing module currently owns:
 - durable `CHANGE_PLAN` reservation and claim orchestration;
 - tenant-scoped scheduled cancellation application orchestration;
 - FastAPI billing cancellation routes;
-- durable `CANCEL_SUBSCRIPTION` reservation and claim orchestration.
+- durable `CANCEL_SUBSCRIPTION` reservation and claim orchestration;
+- authenticated billing webhook HTTP ingestion;
+- canonical provider webhook event validation;
+- HMAC-SHA256 webhook signature verification;
+- durable webhook-event receipt and deduplication.
 
 The current billing implementation does not own:
 
@@ -131,8 +147,6 @@ The current billing implementation does not own:
 - stale in-progress recovery;
 - provider retry scheduling;
 - background provider execution;
-- webhook HMAC verification;
-- webhook HTTP ingestion;
 - webhook business processing;
 - entitlement enforcement;
 - background-job execution;
@@ -631,8 +645,356 @@ Verify raw-body signature
     -> apply or ignore subscription transition
 ```
 
-Webhook signature verification, event persistence, event status enums, and
-processing services are intentionally deferred.
+Webhook event processing, subscription mutation from events, and background
+processing services remain intentionally deferred.
+
+## Implemented Billing Webhook Ingestion
+
+ClinicOps exposes one provider-facing ingestion endpoint:
+
+```text
+POST /api/v1/billing/webhooks/{provider}
+```
+
+The first supported provider is:
+
+```text
+POST /api/v1/billing/webhooks/fake
+```
+
+The endpoint is not tenant-scoped.
+
+It does not require:
+
+- a Bearer access token;
+- a user session;
+- tenant membership;
+- tenant permissions;
+- a client `Idempotency-Key`.
+
+Provider authentication is performed with a timestamped HMAC signature.
+
+## Canonical Webhook Event Envelope
+
+ClinicOps accepts these canonical event types:
+
+```text
+subscription.renewed
+subscription.canceled
+```
+
+Example:
+
+```json
+{
+  "id": "evt_renewed_01",
+  "type": "subscription.renewed",
+  "created_at": "2026-08-22T12:00:00Z",
+  "data": {
+    "provider_subscription_id": "fake_sub_01",
+    "provider_state_version": 4,
+    "price_code": "professional_monthly",
+    "status": "active",
+    "current_period_start": "2026-08-22T12:00:00Z",
+    "current_period_end": "2026-09-22T12:00:00Z",
+    "canceled_at": null
+  }
+}
+```
+
+The contracts require:
+
+- nonempty provider identifiers;
+- timezone-aware timestamps;
+- `provider_state_version >= 1`;
+- `current_period_end > current_period_start`;
+- no unknown fields;
+- lifecycle consistency between event type, status, and `canceled_at`.
+
+Lifecycle consistency:
+
+```text
+subscription.renewed
+    -> status = active
+    -> canceled_at = null
+
+subscription.canceled
+    -> status = canceled
+    -> canceled_at != null
+```
+
+The provider cannot supply local tenant IDs or local subscription IDs.
+
+## Webhook Signature Model
+
+The fake provider signature header uses:
+
+```text
+X-Billing-Signature: t=<unix_timestamp>,v1=<hex_digest>
+```
+
+The signed message is:
+
+```text
+<timestamp>.<raw_request_body>
+```
+
+The digest uses:
+
+```text
+HMAC-SHA256
+```
+
+Verification order:
+
+```text
+read exact request bytes
+    -> enforce payload-size limit
+    -> parse signature header
+    -> validate timestamp tolerance
+    -> calculate expected HMAC
+    -> compare in constant time
+    -> parse canonical JSON event
+```
+
+The exact raw request bytes are authenticated before JSON parsing.
+
+The default signature tolerance is:
+
+```text
+300 seconds
+```
+
+The default payload limit is:
+
+```text
+256 KiB
+```
+
+The shared secret is provided by:
+
+```text
+CLINICOPS_BILLING_WEBHOOK_SECRET
+```
+
+Deployed environments must not use the local default secret.
+
+The secret, complete signature, digest, and raw payload are not written to
+logs or returned in responses.
+
+## Durable Receipt Semantics
+
+A valid delivery is acknowledged only after its event row commits.
+
+The workflow is:
+
+```text
+authenticate raw request bytes
+    -> validate canonical event
+    -> calculate SHA-256 over exact raw bytes
+    -> reserve or replay BillingWebhookEvent
+    -> commit
+    -> return 202 Accepted
+```
+
+The public response is:
+
+```json
+{
+  "received": true
+}
+```
+
+Both a new event and an identical duplicate return:
+
+```text
+202 Accepted
+```
+
+The public response does not expose:
+
+- whether the event was new or duplicate;
+- the local webhook event ID;
+- processing status;
+- processing attempts;
+- payload hashes;
+- signature timestamps;
+- provider state details.
+
+A database failure before commit must not produce a successful receipt.
+
+## Persisted Webhook Event
+
+The existing `BillingWebhookEvent` persistence model stores:
+
+```text
+id
+provider
+provider_event_id
+event_type
+provider_subscription_id
+provider_created_at
+provider_state_version
+payload
+payload_sha256
+signature_timestamp
+status
+processing_attempt_count
+processed_at
+failure_code
+failure_message
+correlation_id
+created_at
+updated_at
+```
+
+A newly ingested event is persisted as:
+
+```text
+status = received
+processing_attempt_count = 0
+processed_at = null
+failure_code = null
+failure_message = null
+```
+
+The ingestion workflow does not change the event to `processing`.
+
+That lifecycle transition belongs to webhook processing.
+
+## Webhook Event Idempotency
+
+The durable uniqueness boundary is:
+
+```text
+provider + provider_event_id
+```
+
+The immutable content boundary is:
+
+```text
+SHA-256(exact raw request bytes)
+```
+
+Behavior:
+
+```text
+same provider
++ same provider event ID
++ same raw-body hash
+    -> accepted duplicate
+    -> no second row
+    -> 202 Accepted
+
+same provider
++ same provider event ID
++ different raw-body hash
+    -> webhook event conflict
+    -> 409 Conflict
+```
+
+The hash is not calculated from a reserialized JSON object.
+
+Whitespace, field ordering, and any other byte-level changes produce a
+different hash.
+
+This intentionally treats the provider event ID as identifying one immutable
+delivery payload.
+
+## Concurrent Webhook Delivery
+
+Two requests may both observe no existing event before either transaction
+commits.
+
+The final protection is the database uniqueness constraint on:
+
+```text
+provider + provider_event_id
+```
+
+Concurrent identical delivery:
+
+```text
+request A inserts
+request B inserts
+request A commits
+request B receives a unique conflict
+request B rolls back
+request B reloads the committed event
+request B compares payload_sha256
+request B returns an idempotent acknowledgement
+```
+
+Concurrent conflicting delivery:
+
+```text
+request A and request B reuse the same provider event ID
+with different raw bytes
+
+    -> one row wins
+    -> the competing request reloads the winner
+    -> hashes differ
+    -> 409 Conflict
+```
+
+Each concurrent test execution uses an independent SQLAlchemy `Session`.
+
+The implementation does not depend only on a read-before-write check.
+
+## Unknown Local Subscription Handling
+
+Webhook ingestion does not require a matching local `Subscription`.
+
+An authenticated event may be persisted when:
+
+```text
+provider_subscription_id is unknown locally
+```
+
+Reasons include:
+
+- event delivery before local state creation;
+- provider and application timing differences;
+- recovery after partial failure;
+- data divergence requiring reconciliation;
+- manually imported or legacy provider state.
+
+The ingestion layer owns durable receipt, not lifecycle application.
+
+A later processing workflow will resolve the subscription using:
+
+```text
+provider + provider_subscription_id
+```
+
+and apply ordering and lifecycle rules.
+
+## Ingestion and Processing Separation
+
+Webhook ingestion is intentionally limited to:
+
+- request authentication;
+- payload boundary validation;
+- canonical event validation;
+- immutable payload hashing;
+- durable event persistence;
+- duplicate replay;
+- conflicting duplicate detection;
+- durable acknowledgement.
+
+It does not:
+
+- lock or mutate a subscription;
+- apply plan changes;
+- finalize cancellation;
+- validate provider event ordering;
+- reject stale provider state versions;
+- update entitlements;
+- enqueue retries;
+- perform reconciliation.
+
+This keeps the provider request lifecycle short and ensures the event is
+durable before domain processing begins.
 
 ## Time Handling
 
@@ -889,10 +1251,14 @@ BillingWebhookEvent
 ├── provider
 ├── provider_event_id
 ├── event_type
+├── provider_subscription_id
 ├── provider_created_at
 ├── provider_state_version
 ├── payload
+├── payload_sha256
+├── signature_timestamp
 ├── status
+├── processing_attempt_count
 ├── processed_at
 ├── failure_code
 ├── failure_message
@@ -920,11 +1286,12 @@ failed_terminal
 The provider state version is nullable because not every future provider event
 must necessarily carry an object-state version.
 
-The JSONB payload stores the verified provider event body after future
-signature verification. Signature headers and secrets are never persisted.
+The JSONB payload stores the verified provider event body after signature
+verification. Signature headers and secrets are never persisted.
 
-The persistence schema exists now. HMAC verification, HTTP ingestion, event
-normalization, and business processing remain intentionally deferred.
+Webhook ingestion, HMAC verification, event deduplication, and durable receipt
+are implemented. Event normalization beyond canonical validation and business
+processing remain intentionally deferred.
 
 ## Repository Boundary
 
@@ -2551,7 +2918,31 @@ Coverage includes:
 - independent database sessions per concurrent thread;
 - concurrent same-key requests;
 - concurrent different-key requests;
-- scoped cleanup by test-owned tenant IDs.
+- scoped cleanup by test-owned tenant IDs;
+- canonical renewed and canceled event validation;
+- lifecycle consistency validation;
+- timezone validation;
+- exact raw-byte HMAC verification;
+- tampered body rejection;
+- malformed signature rejection;
+- stale and future timestamp rejection;
+- tolerance-boundary acceptance;
+- payload-size rejection;
+- webhook configuration validation;
+- deployed-environment default-secret rejection;
+- authenticated event persistence;
+- unknown local subscription acceptance;
+- identical duplicate replay;
+- conflicting duplicate rejection;
+- concurrent identical delivery;
+- concurrent conflicting delivery;
+- independent sessions per concurrent thread;
+- HTTP receipt after commit;
+- no Bearer requirement;
+- signature rejection before JSON parsing;
+- valid signature with malformed JSON;
+- no persistence after failed authentication or schema validation;
+- scoped cleanup by provider event ID.
 
 Migration parity is checked through:
 
@@ -2560,8 +2951,8 @@ alembic upgrade head
 alembic check
 ```
 
-Real-provider execution, webhook ingestion, and background-worker tests are
-added only when those implementation boundaries exist.
+Real-provider execution and background-worker tests are added only when those
+implementation boundaries exist.
 
 ## Invariants
 
@@ -2781,6 +3172,44 @@ The domain foundation establishes these invariants:
 
 89. The workflow provides at-least-once attempts, not exactly-once execution.
 
+90. Webhook authentication covers the exact raw request bytes.
+
+91. JSON parsing occurs only after signature verification succeeds.
+
+92. Signature comparison uses constant-time comparison.
+
+93. Signature timestamps must fall within the configured tolerance.
+
+94. Payloads larger than the configured limit are rejected before ingestion.
+
+95. A successful provider acknowledgement occurs only after database commit.
+
+96. Billing webhook ingestion does not require Bearer authentication.
+
+97. Billing webhook ingestion does not depend on tenant membership.
+
+98. Provider event uniqueness is scoped by provider and provider event ID.
+
+99. Duplicate equality is determined by the SHA-256 of exact raw bytes.
+
+100. An identical duplicate cannot create another event row.
+
+101. Reusing an event ID with different raw bytes is a conflict.
+
+102. A newly ingested event starts in `received`.
+
+103. A newly ingested event has zero processing attempts.
+
+104. Ingestion does not mutate subscription state.
+
+105. A missing local subscription does not block durable event receipt.
+
+106. Webhook secrets, full signatures, and raw payloads are not exposed.
+
+107. Concurrent deduplication relies on the database uniqueness constraint.
+
+108. Webhook processing remains a separate lifecycle boundary.
+
 ## Intentionally Deferred
 
 The following capabilities are intentionally deferred:
@@ -2798,17 +3227,25 @@ The following capabilities are intentionally deferred:
 - automatic renewal application;
 - final cancellation application at period end;
 - undo cancellation;
-- webhook ingestion;
-- webhook processing;
+- webhook event processing;
+- subscription mutation from events;
+- event ordering and stale-version handling;
+- background processing;
+- automatic retries;
+- stale `processing` recovery;
+- dead-letter handling;
 - provider reconciliation;
-- background retries;
+- secret rotation;
+- multiple active signing secrets;
+- real provider-specific adapters;
+- entitlement updates;
+- rate limiting;
+- edge firewall configuration;
 - stale `in_progress` recovery;
 - entitlement revocation;
-- real payment-provider adapters;
 - background jobs;
 - live provider lookup during billing reads;
 - background provider execution;
-- webhook HMAC verification;
 - payment credentials;
 - immediate cancellation;
 - actual monetary processing;
@@ -2829,6 +3266,6 @@ The following capabilities are intentionally deferred:
 
 These capabilities are not required to establish the current domain,
 persistence, fake-provider, subscription-creation, subscription-read,
-scheduled plan-change, and scheduled cancellation workflow foundations. They
-will be added only when their data ownership, transaction, security, failure,
-and testing boundaries are implemented explicitly.
+scheduled plan-change, scheduled cancellation, and webhook-ingestion workflow
+foundations. They will be added only when their data ownership, transaction,
+security, failure, and testing boundaries are implemented explicitly.
