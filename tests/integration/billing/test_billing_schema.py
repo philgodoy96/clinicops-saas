@@ -11,10 +11,11 @@ from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
     BillingProvider,
+    BillingWebhookEventStatus,
+    BillingWebhookEventType,
     ProviderOperationStatus,
     ProviderOperationType,
     SubscriptionStatus,
-    WebhookEventStatus,
 )
 from clinicops.billing.models import (
     BillingCustomer,
@@ -129,14 +130,38 @@ def test_billing_schema_persists_all_foundation_entities(
             "price_code": "starter_monthly",
         },
     )
+    provider_event_id = f"evt_{uuid4().hex}"
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
     event = BillingWebhookEvent(
         provider=BillingProvider.FAKE,
-        provider_event_id=f"evt_{uuid4().hex}",
-        event_type="subscription.created",
+        provider_event_id=provider_event_id,
+        event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+        provider_subscription_id=(provider_subscription_id),
+        provider_created_at=provider_created_at,
         provider_state_version=1,
         payload={
-            "subscription_id": "fake_subscription",
+            "id": provider_event_id,
+            "type": (BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            "created_at": (provider_created_at.isoformat()),
+            "data": {
+                "provider_subscription_id": (provider_subscription_id),
+                "provider_state_version": 1,
+                "price_code": "starter_monthly",
+                "status": "active",
+                "current_period_start": ("2026-08-22T12:00:00+00:00"),
+                "current_period_end": ("2026-09-22T12:00:00+00:00"),
+                "canceled_at": None,
+            },
         },
+        payload_sha256="a" * 64,
+        signature_timestamp=int(provider_created_at.timestamp()),
         correlation_id=str(uuid4()),
     )
 
@@ -157,10 +182,11 @@ def test_billing_schema_persists_all_foundation_entities(
         "price_code": "starter_monthly",
     }
 
-    assert event.status is WebhookEventStatus.RECEIVED
-    assert event.payload == {
-        "subscription_id": "fake_subscription",
-    }
+    assert event.status is BillingWebhookEventStatus.RECEIVED
+    assert event.processing_attempt_count == 0
+    assert event.provider_subscription_id == provider_subscription_id
+    assert event.payload["id"] == provider_event_id
+    assert event.payload_sha256 == "a" * 64
 
 
 def test_billing_customer_is_unique_per_tenant_and_provider(
@@ -374,25 +400,45 @@ def test_webhook_event_is_unique_per_provider(
     db_session: Session,
 ) -> None:
     provider_event_id = f"evt_{uuid4().hex}"
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
 
-    db_session.add(
-        BillingWebhookEvent(
+    def _event(*, payload_sha256: str) -> BillingWebhookEvent:
+        return BillingWebhookEvent(
             provider=BillingProvider.FAKE,
             provider_event_id=provider_event_id,
-            event_type="subscription.created",
-            payload={},
+            event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            provider_subscription_id=(provider_subscription_id),
+            provider_created_at=provider_created_at,
+            provider_state_version=1,
+            payload={
+                "id": provider_event_id,
+                "type": (BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+                "created_at": (provider_created_at.isoformat()),
+                "data": {
+                    "provider_subscription_id": (provider_subscription_id),
+                    "provider_state_version": 1,
+                    "price_code": "starter_monthly",
+                    "status": "active",
+                    "current_period_start": ("2026-08-22T12:00:00+00:00"),
+                    "current_period_end": ("2026-09-22T12:00:00+00:00"),
+                    "canceled_at": None,
+                },
+            },
+            payload_sha256=payload_sha256,
+            signature_timestamp=int(provider_created_at.timestamp()),
         )
-    )
+
+    db_session.add(_event(payload_sha256="a" * 64))
     db_session.flush()
 
-    db_session.add(
-        BillingWebhookEvent(
-            provider=BillingProvider.FAKE,
-            provider_event_id=provider_event_id,
-            event_type="subscription.created",
-            payload={},
-        )
-    )
+    db_session.add(_event(payload_sha256="b" * 64))
 
     with pytest.raises(IntegrityError) as exception_info:
         db_session.flush()
@@ -648,38 +694,78 @@ def test_failed_provider_operation_requires_failure_code(
 def test_processed_webhook_event_requires_processed_timestamp(
     db_session: Session,
 ) -> None:
+    provider_event_id = f"evt_{uuid4().hex}"
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
     db_session.add(
         BillingWebhookEvent(
             provider=BillingProvider.FAKE,
-            provider_event_id=f"evt_{uuid4().hex}",
-            event_type="subscription.updated",
-            payload={},
-            status=WebhookEventStatus.PROCESSED,
+            provider_event_id=provider_event_id,
+            event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            provider_subscription_id=(provider_subscription_id),
+            provider_created_at=(provider_created_at),
+            provider_state_version=1,
+            payload={
+                "id": provider_event_id,
+                "data": {"provider_subscription_id": (provider_subscription_id)},
+            },
+            payload_sha256="b" * 64,
+            signature_timestamp=int(provider_created_at.timestamp()),
+            status=(BillingWebhookEventStatus.PROCESSED),
+            processing_attempt_count=1,
         )
     )
 
     with pytest.raises(IntegrityError) as exception_info:
         db_session.flush()
 
-    assert isinstance(exception_info.value.orig, CheckViolation)
+    assert isinstance(
+        exception_info.value.orig,
+        CheckViolation,
+    )
     assert _constraint_name(exception_info.value) == "ck_billing_webhook_events_status_consistency"
 
 
-def test_webhook_event_rejects_negative_provider_version(
+def test_webhook_event_rejects_nonpositive_provider_version(
     db_session: Session,
 ) -> None:
+    provider_event_id = f"evt_{uuid4().hex}"
+    provider_created_at = datetime(
+        2026,
+        8,
+        22,
+        12,
+        tzinfo=UTC,
+    )
+    provider_subscription_id = f"fake_sub_{uuid4().hex}"
     db_session.add(
         BillingWebhookEvent(
             provider=BillingProvider.FAKE,
-            provider_event_id=f"evt_{uuid4().hex}",
-            event_type="subscription.updated",
-            provider_state_version=-1,
-            payload={},
+            provider_event_id=provider_event_id,
+            event_type=(BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            provider_subscription_id=(provider_subscription_id),
+            provider_created_at=(provider_created_at),
+            provider_state_version=0,
+            payload={
+                "id": provider_event_id,
+                "data": {"provider_subscription_id": (provider_subscription_id)},
+            },
+            payload_sha256="c" * 64,
+            signature_timestamp=int(provider_created_at.timestamp()),
         )
     )
 
     with pytest.raises(IntegrityError) as exception_info:
         db_session.flush()
 
-    assert isinstance(exception_info.value.orig, CheckViolation)
-    assert _constraint_name(exception_info.value) == "ck_billing_webhook_events_version_nonnegative"
+    assert isinstance(
+        exception_info.value.orig,
+        CheckViolation,
+    )
+    assert _constraint_name(exception_info.value) == "ck_billing_webhook_events_version_positive"

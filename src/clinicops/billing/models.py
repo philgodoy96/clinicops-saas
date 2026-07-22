@@ -5,6 +5,7 @@ from enum import StrEnum
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -17,25 +18,19 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import (
-    ENUM as PostgreSQLEnum,
-)
-from sqlalchemy.dialects.postgresql import (
-    JSONB,
-)
-from sqlalchemy.dialects.postgresql import (
-    UUID as PostgreSQLUUID,
-)
+from sqlalchemy.dialects.postgresql import ENUM as PostgreSQLEnum
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
     BillingProvider,
+    BillingWebhookEventStatus,
     ProviderOperationStatus,
     ProviderOperationType,
     SubscriptionStatus,
-    WebhookEventStatus,
 )
 from clinicops.db.base import Base
 from clinicops.tenancy.models import Tenant
@@ -82,7 +77,7 @@ provider_operation_status_enum = PostgreSQLEnum(
 )
 
 webhook_event_status_enum = PostgreSQLEnum(
-    WebhookEventStatus,
+    BillingWebhookEventStatus,
     name="webhook_event_status",
     values_callable=_enum_values,
 )
@@ -170,10 +165,10 @@ class Subscription(Base):
         ),
         CheckConstraint(
             "provider_state_version >= 0",
-            name=("ck_subscriptions_provider_state_version_nonnegative"),
+            name="ck_subscriptions_provider_state_version_nonnegative",
         ),
         CheckConstraint(
-            ("pending_price_code IS NULL OR pending_price_code <> price_code"),
+            "pending_price_code IS NULL OR pending_price_code <> price_code",
             name="ck_subscriptions_pending_price_differs",
         ),
         CheckConstraint(
@@ -198,27 +193,16 @@ class Subscription(Base):
         ),
         CheckConstraint(
             (
-                "("
-                "status = 'canceled' "
+                "(status = 'canceled' "
                 "AND canceled_at IS NOT NULL "
-                "AND cancel_at_period_end = false"
-                ") "
+                "AND cancel_at_period_end = false) "
                 "OR "
-                "("
-                "status <> 'canceled' "
+                "(status <> 'canceled' "
                 "AND canceled_at IS NULL "
-                "AND ("
-                "("
-                "cancel_at_period_end = true "
-                "AND cancellation_requested_at IS NOT NULL"
-                ") "
-                "OR "
-                "("
-                "cancel_at_period_end = false "
-                "AND cancellation_requested_at IS NULL"
-                ")"
-                ")"
-                ")"
+                "AND ((cancel_at_period_end = true "
+                "AND cancellation_requested_at IS NOT NULL) "
+                "OR (cancel_at_period_end = false "
+                "AND cancellation_requested_at IS NULL)))"
             ),
             name="ck_subscriptions_cancellation_consistency",
         ),
@@ -359,44 +343,33 @@ class ProviderOperation(Base):
             name="ck_provider_operations_attempt_count_nonnegative",
         ),
         CheckConstraint(
-            ("request_fingerprint ~ '^[0-9a-f]{64}$'"),
+            "request_fingerprint ~ '^[0-9a-f]{64}$'",
             name="ck_provider_operations_fingerprint_format",
         ),
         CheckConstraint(
             (
-                "("
-                "status = 'pending' "
+                "(status = 'pending' "
                 "AND started_at IS NULL "
-                "AND completed_at IS NULL"
-                ") "
+                "AND completed_at IS NULL) "
                 "OR "
-                "("
-                "status IN ('in_progress', 'failed_retryable') "
+                "(status IN ('in_progress', 'failed_retryable') "
                 "AND started_at IS NOT NULL "
-                "AND completed_at IS NULL"
-                ") "
+                "AND completed_at IS NULL) "
                 "OR "
-                "("
-                "status IN ('succeeded', 'failed_terminal') "
+                "(status IN ('succeeded', 'failed_terminal') "
                 "AND started_at IS NOT NULL "
-                "AND completed_at IS NOT NULL"
-                ")"
+                "AND completed_at IS NOT NULL)"
             ),
             name="ck_provider_operations_status_timestamps",
         ),
         CheckConstraint(
             (
-                "("
-                "status IN ('failed_retryable', 'failed_terminal') "
-                "AND failure_code IS NOT NULL"
-                ") "
+                "(status IN ('failed_retryable', 'failed_terminal') "
+                "AND failure_code IS NOT NULL) "
                 "OR "
-                "("
-                "status NOT IN "
-                "('failed_retryable', 'failed_terminal') "
+                "(status NOT IN ('failed_retryable', 'failed_terminal') "
                 "AND failure_code IS NULL "
-                "AND failure_message IS NULL"
-                ")"
+                "AND failure_message IS NULL)"
             ),
             name="ck_provider_operations_failure_consistency",
         ),
@@ -506,7 +479,7 @@ class ProviderOperation(Base):
 
 
 class BillingWebhookEvent(Base):
-    """Verified provider event persisted before business processing."""
+    """Authenticated provider event persisted before processing."""
 
     __tablename__ = "billing_webhook_events"
     __table_args__ = (
@@ -515,39 +488,72 @@ class BillingWebhookEvent(Base):
             "provider_event_id",
             name="uq_billing_webhook_events_provider_event",
         ),
+        Index(
+            "ix_billing_webhook_events_status_created_at",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_billing_webhook_events_subscription_version",
+            "provider",
+            "provider_subscription_id",
+            "provider_state_version",
+        ),
         CheckConstraint(
-            ("provider_state_version IS NULL OR provider_state_version >= 0"),
-            name="ck_billing_webhook_events_version_nonnegative",
+            "provider_subscription_id <> ''",
+            name=("ck_billing_webhook_events_subscription_id_nonempty"),
+        ),
+        CheckConstraint(
+            "provider_state_version > 0",
+            name=("ck_billing_webhook_events_version_positive"),
+        ),
+        CheckConstraint(
+            "signature_timestamp > 0",
+            name=("ck_billing_webhook_events_signature_timestamp_positive"),
+        ),
+        CheckConstraint(
+            "processing_attempt_count >= 0",
+            name=("ck_billing_webhook_events_attempt_count_nonnegative"),
+        ),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}$'",
+            name=("ck_billing_webhook_events_payload_sha256_format"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name=("ck_billing_webhook_events_payload_object"),
         ),
         CheckConstraint(
             (
-                "("
-                "status = 'received' "
+                "(status = 'received' "
+                "AND processing_attempt_count = 0 "
                 "AND processed_at IS NULL "
                 "AND failure_code IS NULL "
-                "AND failure_message IS NULL"
-                ") "
+                "AND failure_message IS NULL) "
                 "OR "
-                "("
-                "status IN ('processed', 'ignored') "
+                "(status = 'processing' "
+                "AND processing_attempt_count > 0 "
+                "AND processed_at IS NULL "
+                "AND failure_code IS NULL "
+                "AND failure_message IS NULL) "
+                "OR "
+                "(status IN ('processed', 'ignored') "
+                "AND processing_attempt_count > 0 "
                 "AND processed_at IS NOT NULL "
                 "AND failure_code IS NULL "
-                "AND failure_message IS NULL"
-                ") "
+                "AND failure_message IS NULL) "
                 "OR "
-                "("
-                "status = 'failed_retryable' "
+                "(status = 'failed_retryable' "
+                "AND processing_attempt_count > 0 "
                 "AND processed_at IS NULL "
-                "AND failure_code IS NOT NULL"
-                ") "
+                "AND failure_code IS NOT NULL) "
                 "OR "
-                "("
-                "status = 'failed_terminal' "
+                "(status = 'failed_terminal' "
+                "AND processing_attempt_count > 0 "
                 "AND processed_at IS NOT NULL "
-                "AND failure_code IS NOT NULL"
-                ")"
+                "AND failure_code IS NOT NULL)"
             ),
-            name="ck_billing_webhook_events_status_consistency",
+            name=("ck_billing_webhook_events_status_consistency"),
         ),
     )
 
@@ -568,23 +574,41 @@ class BillingWebhookEvent(Base):
         String(128),
         nullable=False,
     )
-    provider_created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
+    provider_subscription_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
     )
-    provider_state_version: Mapped[int | None] = mapped_column(
+    provider_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    provider_state_version: Mapped[int] = mapped_column(
         Integer,
-        nullable=True,
+        nullable=False,
     )
     payload: Mapped[dict[str, object]] = mapped_column(
         JSONB,
         nullable=False,
     )
-    status: Mapped[WebhookEventStatus] = mapped_column(
+    payload_sha256: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    signature_timestamp: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    status: Mapped[BillingWebhookEventStatus] = mapped_column(
         webhook_event_status_enum,
         nullable=False,
-        default=WebhookEventStatus.RECEIVED,
-        server_default=WebhookEventStatus.RECEIVED.value,
+        default=BillingWebhookEventStatus.RECEIVED,
+        server_default=(BillingWebhookEventStatus.RECEIVED.value),
+    )
+    processing_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
     )
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
