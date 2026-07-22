@@ -12,6 +12,7 @@ from clinicops.billing.services.get_subscription import (
 )
 from clinicops.billing.services.schedule_cancellation import (
     ScheduleBillingSubscriptionCancellationCommand,
+    ScheduleBillingSubscriptionCancellationService,
     ScheduledBillingSubscriptionCancellation,
 )
 from clinicops.billing.services.schedule_plan_change import (
@@ -30,6 +31,7 @@ __all__ = [
     "ScheduleBillingPlanChangeCommand",
     "ScheduleBillingPlanChangeService",
     "ScheduleBillingSubscriptionCancellationCommand",
+    "ScheduleBillingSubscriptionCancellationService",
     "ScheduledBillingPlanChange",
     "ScheduledBillingSubscriptionCancellation",
 ]
