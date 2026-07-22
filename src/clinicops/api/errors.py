@@ -30,6 +30,20 @@ from clinicops.authorization.exceptions import (
     TenantNotFoundError,
     TenantPermissionDeniedError,
 )
+from clinicops.billing.exceptions import (
+    BillingCustomerAlreadyExistsError,
+    BillingIdempotencyConflictError,
+    BillingSubscriptionAlreadyExistsError,
+    InvalidIdempotencyKeyError,
+    MissingIdempotencyKeyError,
+    ProviderOperationAlreadyExistsError,
+    ProviderOperationInProgressError,
+    UnsupportedPriceCodeError,
+)
+from clinicops.billing.providers.exceptions import (
+    ProviderRetryableError,
+    ProviderTerminalError,
+)
 from clinicops.core.exceptions import ApplicationError
 from clinicops.core.request_context import get_correlation_id, get_request_id
 from clinicops.db.exceptions import DatabaseUnavailableError
@@ -209,6 +223,21 @@ MEMBERSHIP_ADMINISTRATION_CONFLICT_ERRORS = (
     InvalidOwnershipTransferError,
 )
 
+BILLING_BAD_REQUEST_ERRORS = (
+    MissingIdempotencyKeyError,
+    InvalidIdempotencyKeyError,
+    UnsupportedPriceCodeError,
+)
+
+BILLING_CONFLICT_ERRORS = (
+    BillingCustomerAlreadyExistsError,
+    BillingSubscriptionAlreadyExistsError,
+    BillingIdempotencyConflictError,
+    ProviderOperationAlreadyExistsError,
+    ProviderOperationInProgressError,
+    ProviderTerminalError,
+)
+
 
 def _problem_type(code: str) -> str:
     """Return the stable problem type URI for one public error code."""
@@ -380,6 +409,27 @@ def _application_problem(
         return (
             status.HTTP_409_CONFLICT,
             "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, BILLING_BAD_REQUEST_ERRORS):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
+            None,
+        )
+
+    if isinstance(exception, BILLING_CONFLICT_ERRORS):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, ProviderRetryableError):
+        return (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Service unavailable",
             None,
         )
 
