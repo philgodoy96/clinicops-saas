@@ -25,10 +25,17 @@ from clinicops.billing.providers.contracts import (
     CreateSubscriptionRequest,
     CreateSubscriptionResult,
 )
+from clinicops.billing.providers.control import (
+    FakeProviderControl,
+    FakeProviderOutcome,
+)
 from clinicops.billing.providers.exceptions import (
+    ProviderAmbiguousOutcomeError,
     ProviderIdempotencyConflictError,
     ProviderInvalidStateError,
     ProviderResourceNotFoundError,
+    ProviderRetryableError,
+    ProviderTerminalError,
 )
 from clinicops.billing.providers.idempotency import (
     fingerprint_provider_request,
@@ -53,7 +60,15 @@ ResultT = TypeVar(
 class _StoredOperation:
     operation_type: ProviderOperationType
     request_fingerprint: str
-    result: ProviderResult
+    result: ProviderResult | None = None
+    terminal_failure_message: str | None = None
+
+    def __post_init__(self) -> None:
+        has_result = self.result is not None
+        has_failure = self.terminal_failure_message is not None
+
+        if has_result == has_failure:
+            raise ValueError("Stored provider operation must contain exactly one outcome.")
 
 
 @dataclass(slots=True)
@@ -69,7 +84,12 @@ class _FakeSubscription:
 class FakePaymentProvider:
     """Deterministic in-memory payment provider for local development."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        control: FakeProviderControl | None = None,
+    ) -> None:
+        self._control = control or FakeProviderControl()
         self._lock = Lock()
         self._customers: set[str] = set()
         self._subscriptions: dict[
@@ -105,6 +125,14 @@ class FakePaymentProvider:
                     CreateCustomerResult,
                 )
 
+            outcome = self._control.consume_next(operation_type=operation_type)
+            self._raise_pre_mutation_failure(
+                provider_operation_key=(request.provider_operation_key),
+                operation_type=operation_type,
+                request_fingerprint=request_fingerprint,
+                outcome=outcome,
+            )
+
             stable_token = _stable_token(request.provider_operation_key)
             result = CreateCustomerResult(
                 provider_customer_id=(f"fake_cus_{stable_token}"),
@@ -112,14 +140,18 @@ class FakePaymentProvider:
             )
 
             self._customers.add(result.provider_customer_id)
-            self._store_operation(
+            self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
                 operation_type=operation_type,
                 request_fingerprint=request_fingerprint,
                 result=result,
             )
 
-            return result
+        self._raise_ambiguous_outcome(
+            operation_type=operation_type,
+            outcome=outcome,
+        )
+        return result
 
     def create_subscription(
         self,
@@ -147,6 +179,13 @@ class FakePaymentProvider:
                     CreateSubscriptionResult,
                 )
 
+            outcome = self._control.consume_next(operation_type=operation_type)
+            self._raise_pre_mutation_failure(
+                provider_operation_key=(request.provider_operation_key),
+                operation_type=operation_type,
+                request_fingerprint=request_fingerprint,
+                outcome=outcome,
+            )
             self._require_customer(
                 provider_customer_id=(request.provider_customer_id),
                 operation_type=operation_type,
@@ -185,14 +224,18 @@ class FakePaymentProvider:
                 provider_state_version=1,
             )
             self._subscription_by_customer[request.provider_customer_id] = provider_subscription_id
-            self._store_operation(
+            self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
                 operation_type=operation_type,
                 request_fingerprint=request_fingerprint,
                 result=result,
             )
 
-            return result
+        self._raise_ambiguous_outcome(
+            operation_type=operation_type,
+            outcome=outcome,
+        )
+        return result
 
     def change_plan(
         self,
@@ -220,6 +263,13 @@ class FakePaymentProvider:
                     ChangePlanResult,
                 )
 
+            outcome = self._control.consume_next(operation_type=operation_type)
+            self._raise_pre_mutation_failure(
+                provider_operation_key=(request.provider_operation_key),
+                operation_type=operation_type,
+                request_fingerprint=request_fingerprint,
+                outcome=outcome,
+            )
             subscription = self._require_subscription(
                 provider_subscription_id=(request.provider_subscription_id),
                 operation_type=operation_type,
@@ -265,14 +315,18 @@ class FakePaymentProvider:
             subscription.current_period_start = period.start
             subscription.current_period_end = period.end
             subscription.provider_state_version = next_version
-            self._store_operation(
+            self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
                 operation_type=operation_type,
                 request_fingerprint=request_fingerprint,
                 result=result,
             )
 
-            return result
+        self._raise_ambiguous_outcome(
+            operation_type=operation_type,
+            outcome=outcome,
+        )
+        return result
 
     def cancel_subscription(
         self,
@@ -299,6 +353,13 @@ class FakePaymentProvider:
                     CancelSubscriptionResult,
                 )
 
+            outcome = self._control.consume_next(operation_type=operation_type)
+            self._raise_pre_mutation_failure(
+                provider_operation_key=(request.provider_operation_key),
+                operation_type=operation_type,
+                request_fingerprint=request_fingerprint,
+                outcome=outcome,
+            )
             subscription = self._require_subscription(
                 provider_subscription_id=(request.provider_subscription_id),
                 operation_type=operation_type,
@@ -324,14 +385,18 @@ class FakePaymentProvider:
 
             subscription.canceled_at = request.effective_at
             subscription.provider_state_version = next_version
-            self._store_operation(
+            self._store_operation_result(
                 provider_operation_key=(request.provider_operation_key),
                 operation_type=operation_type,
                 request_fingerprint=request_fingerprint,
                 result=result,
             )
 
-            return result
+        self._raise_ambiguous_outcome(
+            operation_type=operation_type,
+            outcome=outcome,
+        )
+        return result
 
     def _replay_operation(
         self,
@@ -355,9 +420,63 @@ class FakePaymentProvider:
                 provider_operation_key=(provider_operation_key),
             )
 
+        if stored.terminal_failure_message is not None:
+            raise ProviderTerminalError(
+                provider=self.provider,
+                operation_type=operation_type,
+                internal_message=(stored.terminal_failure_message),
+            )
+
+        if stored.result is None:
+            raise RuntimeError("Stored provider operation has no replayable outcome.")
+
         return stored.result
 
-    def _store_operation(
+    def _raise_pre_mutation_failure(
+        self,
+        *,
+        provider_operation_key: str,
+        operation_type: ProviderOperationType,
+        request_fingerprint: str,
+        outcome: FakeProviderOutcome,
+    ) -> None:
+        if outcome is FakeProviderOutcome.RETRYABLE_FAILURE:
+            raise ProviderRetryableError(
+                provider=self.provider,
+                operation_type=operation_type,
+                internal_message=("Fake provider simulated a temporary failure."),
+            )
+
+        if outcome is FakeProviderOutcome.TERMINAL_REJECTION:
+            failure_message = "Fake provider simulated a terminal rejection."
+            self._operations[provider_operation_key] = _StoredOperation(
+                operation_type=operation_type,
+                request_fingerprint=request_fingerprint,
+                terminal_failure_message=failure_message,
+            )
+            raise ProviderTerminalError(
+                provider=self.provider,
+                operation_type=operation_type,
+                internal_message=failure_message,
+            )
+
+    def _raise_ambiguous_outcome(
+        self,
+        *,
+        operation_type: ProviderOperationType,
+        outcome: FakeProviderOutcome,
+    ) -> None:
+        if outcome is FakeProviderOutcome.AMBIGUOUS_SUCCESS:
+            raise ProviderAmbiguousOutcomeError(
+                provider=self.provider,
+                operation_type=operation_type,
+                internal_message=(
+                    "Fake provider applied the mutation but "
+                    "simulated a timeout before confirmation."
+                ),
+            )
+
+    def _store_operation_result(
         self,
         *,
         provider_operation_key: str,

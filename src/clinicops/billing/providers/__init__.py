@@ -11,6 +11,10 @@ from clinicops.billing.providers.contracts import (
     CreateSubscriptionRequest,
     CreateSubscriptionResult,
 )
+from clinicops.billing.providers.control import (
+    FakeProviderControl,
+    FakeProviderOutcome,
+)
 from clinicops.billing.providers.exceptions import (
     InvalidProviderOperationKeyError,
     ProviderAmbiguousOutcomeError,
@@ -49,6 +53,8 @@ __all__ = [
     "CreateSubscriptionRequest",
     "CreateSubscriptionResult",
     "FakePaymentProvider",
+    "FakeProviderControl",
+    "FakeProviderOutcome",
     "InvalidProviderOperationKeyError",
     "PaymentProvider",
     "ProviderAmbiguousOutcomeError",
