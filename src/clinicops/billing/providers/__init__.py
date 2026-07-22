@@ -21,6 +21,9 @@ from clinicops.billing.providers.exceptions import (
     ProviderRetryableError,
     ProviderTerminalError,
 )
+from clinicops.billing.providers.fake import (
+    FakePaymentProvider,
+)
 from clinicops.billing.providers.idempotency import (
     MAX_PROVIDER_OPERATION_KEY_LENGTH,
     PROVIDER_OPERATION_KEY_PREFIX,
@@ -45,6 +48,7 @@ __all__ = [
     "CreateCustomerResult",
     "CreateSubscriptionRequest",
     "CreateSubscriptionResult",
+    "FakePaymentProvider",
     "InvalidProviderOperationKeyError",
     "PaymentProvider",
     "ProviderAmbiguousOutcomeError",
