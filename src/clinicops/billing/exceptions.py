@@ -227,3 +227,13 @@ class ProviderOperationInProgressError(BillingError):
             "A provider operation with the same tenant, type, "
             "and idempotency key is already in progress."
         )
+
+
+class BillingSubscriptionNotFoundError(BillingError):
+    """Raised when a tenant has no persisted billing subscription."""
+
+    code = "billing_subscription_not_found"
+    public_message = "The billing subscription was not found."
+
+    def __init__(self) -> None:
+        super().__init__("No billing subscription exists for the authorized tenant.")
