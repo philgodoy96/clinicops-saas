@@ -560,6 +560,12 @@ class CreateBillingSubscriptionService:
         result: CreateCustomerResult,
     ) -> str:
         now = self._clock.now()
+        # Keep the same provider-operation lock order as reservation:
+        # subscription operation, then customer operation.
+        subscription_operation = self._require_operation_for_update(
+            session,
+            subscription_operation_id,
+        )
         customer_operation = self._require_operation_for_update(
             session,
             customer_operation_id,
@@ -600,10 +606,6 @@ class CreateBillingSubscriptionService:
             completed_at=now,
         )
 
-        subscription_operation = self._require_operation_for_update(
-            session,
-            subscription_operation_id,
-        )
         subscription_operation.billing_customer_id = billing_customer.id
         self._claim_operation(
             subscription_operation,
@@ -767,7 +769,7 @@ class CreateBillingSubscriptionService:
             if error.retryable
             else ProviderOperationStatus.FAILED_TERMINAL
         )
-        operation.completed_at = self._clock.now()
+        operation.completed_at = None if error.retryable else self._clock.now()
         operation.failure_code = error.code
         operation.failure_message = error.public_message[:512]
         operation.result_payload = None
