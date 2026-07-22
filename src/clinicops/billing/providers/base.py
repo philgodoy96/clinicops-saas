@@ -11,6 +11,9 @@ from clinicops.billing.providers.contracts import (
     CreateSubscriptionRequest,
     CreateSubscriptionResult,
 )
+from clinicops.billing.reconciliation import (
+    BillingProviderSubscriptionSnapshot,
+)
 
 
 class PaymentProvider(Protocol):
@@ -51,5 +54,13 @@ class PaymentProvider(Protocol):
         request: CancelSubscriptionRequest,
     ) -> CancelSubscriptionResult:
         """Cancel or replay a provider subscription mutation."""
+
+        ...
+
+    def get_subscription_snapshot(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingProviderSubscriptionSnapshot | None:
+        """Return current provider state without mutating local state."""
 
         ...

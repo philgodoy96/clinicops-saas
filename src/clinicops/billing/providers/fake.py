@@ -11,6 +11,7 @@ from clinicops.billing.catalog import (
 from clinicops.billing.enums import (
     BillingProvider,
     ProviderOperationType,
+    SubscriptionStatus,
 )
 from clinicops.billing.exceptions import (
     UnsupportedPriceCodeError,
@@ -43,6 +44,10 @@ from clinicops.billing.providers.idempotency import (
 from clinicops.billing.providers.periods import (
     calculate_billing_period,
 )
+from clinicops.billing.reconciliation import (
+    BillingProviderSubscriptionSnapshot,
+)
+from clinicops.core.clock import Clock, SystemClock
 
 type ProviderResult = (
     CreateCustomerResult | CreateSubscriptionResult | ChangePlanResult | CancelSubscriptionResult
@@ -91,8 +96,10 @@ class FakePaymentProvider:
         self,
         *,
         control: FakeProviderControl | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self._control = control or FakeProviderControl()
+        self._clock = clock if clock is not None else SystemClock()
         self._lock = Lock()
         self._customers: set[str] = set()
         self._subscriptions: dict[
@@ -428,6 +435,97 @@ class FakePaymentProvider:
             outcome=outcome,
         )
         return result
+
+    def get_subscription_snapshot(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingProviderSubscriptionSnapshot | None:
+        """Return current deterministic provider subscription state."""
+
+        normalized_subscription_id = provider_subscription_id.strip()
+
+        if not normalized_subscription_id:
+            raise ValueError("The provider subscription ID must not be empty.")
+
+        observed_at = self._clock.now()
+
+        with self._lock:
+            subscription = self._subscriptions.get(normalized_subscription_id)
+
+            if subscription is None:
+                return None
+
+            self._materialize_scheduled_state(
+                subscription=subscription,
+                observed_at=observed_at,
+            )
+
+            status = (
+                SubscriptionStatus.CANCELED
+                if subscription.canceled_at is not None
+                else SubscriptionStatus.ACTIVE
+            )
+
+            return BillingProviderSubscriptionSnapshot(
+                provider=self.provider,
+                provider_subscription_id=(normalized_subscription_id),
+                provider_state_version=(subscription.provider_state_version),
+                price_code=subscription.price_code,
+                status=status,
+                current_period_start=(subscription.current_period_start),
+                current_period_end=(subscription.current_period_end),
+                cancel_at_period_end=(subscription.pending_cancellation_at is not None),
+                canceled_at=subscription.canceled_at,
+                observed_at=observed_at,
+            )
+
+    def _materialize_scheduled_state(
+        self,
+        *,
+        subscription: _FakeSubscription,
+        observed_at: datetime,
+    ) -> None:
+        if subscription.canceled_at is not None:
+            return
+
+        pending_cancellation_at = subscription.pending_cancellation_at
+
+        if pending_cancellation_at is not None and observed_at >= pending_cancellation_at:
+            subscription.canceled_at = pending_cancellation_at
+            subscription.pending_cancellation_at = None
+            subscription.pending_price_code = None
+            subscription.pending_effective_at = None
+            subscription.provider_state_version += 1
+            return
+
+        pending_price_code = subscription.pending_price_code
+        pending_effective_at = subscription.pending_effective_at
+
+        if (
+            pending_price_code is None
+            or pending_effective_at is None
+            or observed_at < pending_effective_at
+        ):
+            return
+
+        try:
+            price = get_price_definition(pending_price_code)
+        except UnsupportedPriceCodeError as error:
+            raise RuntimeError(
+                "The fake provider contains an unsupported pending subscription price."
+            ) from error
+
+        period = calculate_billing_period(
+            effective_at=pending_effective_at,
+            billing_interval=price.billing_interval,
+        )
+
+        subscription.price_code = price.price_code
+        subscription.current_period_start = period.start
+        subscription.current_period_end = period.end
+        subscription.pending_price_code = None
+        subscription.pending_effective_at = None
+        subscription.provider_state_version += 1
 
     def _replay_operation(
         self,
