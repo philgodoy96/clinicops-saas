@@ -24,6 +24,9 @@ from clinicops.billing.services.schedule_cancellation import (
 from clinicops.billing.services.schedule_plan_change import (
     ScheduleBillingPlanChangeService,
 )
+from clinicops.billing.webhooks.enqueue_processing_job import (
+    EnqueueBillingWebhookProcessingJobService,
+)
 
 IdempotencyKeyHeader = Annotated[
     str | None,
@@ -104,6 +107,14 @@ def get_schedule_billing_subscription_cancellation_service(
     )
 
 
+def get_enqueue_billing_webhook_processing_job_service() -> (
+    EnqueueBillingWebhookProcessingJobService
+):
+    """Build the billing webhook processing-job enqueue service."""
+
+    return EnqueueBillingWebhookProcessingJobService()
+
+
 get_billing_read_tenant_context = require_tenant_permission(TenantPermission.BILLING_READ)
 get_billing_manage_tenant_context = require_tenant_permission(TenantPermission.BILLING_MANAGE)
 
@@ -135,4 +146,8 @@ ScheduleBillingPlanChangeServiceDependency = Annotated[
 ScheduleBillingSubscriptionCancellationServiceDependency = Annotated[
     ScheduleBillingSubscriptionCancellationService,
     Depends(get_schedule_billing_subscription_cancellation_service),
+]
+EnqueueBillingWebhookProcessingJobServiceDependency = Annotated[
+    EnqueueBillingWebhookProcessingJobService,
+    Depends(get_enqueue_billing_webhook_processing_job_service),
 ]

@@ -14,9 +14,15 @@ from clinicops.api.dependencies import (
     ApplicationSettingsDependency,
     DatabaseSessionDependency,
 )
+from clinicops.api.v1.billing.dependencies import (
+    EnqueueBillingWebhookProcessingJobServiceDependency,
+)
 from clinicops.billing.enums import BillingProvider
 from clinicops.billing.exceptions import (
     BillingWebhookProviderNotFoundError,
+)
+from clinicops.billing.webhooks.enqueue_processing_job import (
+    EnqueueBillingWebhookProcessingJobCommand,
 )
 from clinicops.billing.webhooks.ingest import (
     IngestBillingWebhookCommand,
@@ -128,19 +134,48 @@ AuthenticatedBillingWebhookDependency = Annotated[
     summary="Ingest an authenticated billing webhook",
 )
 def ingest_billing_webhook(
+    request: Request,
     authenticated_webhook: (AuthenticatedBillingWebhookDependency),
     session: DatabaseSessionDependency,
     service: IngestBillingWebhookServiceDependency,
+    enqueue_service: (EnqueueBillingWebhookProcessingJobServiceDependency),
 ) -> BillingWebhookReceiptResponse:
     """Commit durable receipt before acknowledging the provider."""
 
-    service.execute(
+    ingested = service.execute(
         session,
         IngestBillingWebhookCommand(
             provider=authenticated_webhook.provider,
             raw_body=authenticated_webhook.raw_body,
             signature_timestamp=(authenticated_webhook.signature_timestamp),
             correlation_id=(authenticated_webhook.correlation_id),
+        ),
+    )
+
+    correlation_id = getattr(
+        request.state,
+        "correlation_id",
+        None,
+    )
+    if not isinstance(correlation_id, str):
+        raise RuntimeError(
+            "A trusted correlation ID is required to enqueue billing webhook processing."
+        )
+
+    origin_request_id = getattr(
+        request.state,
+        "request_id",
+        None,
+    )
+    if not isinstance(origin_request_id, str):
+        origin_request_id = None
+
+    enqueue_service.execute(
+        session,
+        EnqueueBillingWebhookProcessingJobCommand(
+            webhook_event_id=ingested.webhook_event_id,
+            correlation_id=correlation_id,
+            origin_request_id=origin_request_id,
         ),
     )
     session.commit()
