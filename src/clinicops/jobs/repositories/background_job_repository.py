@@ -125,6 +125,14 @@ class BackgroundJobRepository:
 
         return list(self._session.scalars(statement).all())
 
+    def get_by_id_for_update(
+        self,
+        job_id: UUID,
+    ) -> BackgroundJob | None:
+        statement = select(BackgroundJob).where(BackgroundJob.id == job_id).with_for_update()
+
+        return self._session.execute(statement).scalar_one_or_none()
+
     def flush(self) -> None:
         self._session.flush()
 
