@@ -5,11 +5,14 @@ from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from clinicops.db.session import get_engine
-from clinicops.jobs.contracts import ClaimBackgroundJobsCommand
+from clinicops.jobs.contracts import (
+    ClaimBackgroundJobsCommand,
+    ClaimedBackgroundJob,
+)
 from clinicops.jobs.enums import BackgroundJobStatus
 from clinicops.jobs.models import BackgroundJob
 from clinicops.jobs.repositories.background_job_repository import (
@@ -18,6 +21,30 @@ from clinicops.jobs.repositories.background_job_repository import (
 from clinicops.jobs.services.claim_background_jobs import (
     ClaimBackgroundJobsService,
 )
+
+_TEST_JOB_PRIORITY = 2_147_483_647
+
+
+def _clear_competing_claimable_jobs(*owned_job_ids: UUID) -> None:
+    owned_ids = set(owned_job_ids)
+
+    with Session(get_engine()) as session:
+        statement = delete(BackgroundJob).where(
+            BackgroundJob.status.in_(
+                (
+                    BackgroundJobStatus.QUEUED,
+                    BackgroundJobStatus.RETRY_SCHEDULED,
+                )
+            ),
+            BackgroundJob.available_at <= func.now(),
+            (BackgroundJob.processing_attempt_count < BackgroundJob.max_attempts),
+        )
+
+        if owned_ids:
+            statement = statement.where(BackgroundJob.id.not_in(owned_ids))
+
+        session.execute(statement)
+        session.commit()
 
 
 @pytest.fixture
@@ -55,6 +82,39 @@ def _new_job(
     )
 
 
+def _owned_claim_job(
+    *,
+    status: BackgroundJobStatus = BackgroundJobStatus.QUEUED,
+    processing_attempt_count: int = 0,
+    max_attempts: int = 5,
+) -> BackgroundJob:
+    return _new_job(
+        priority=_TEST_JOB_PRIORITY,
+        # Stay invisible until the test opens the claim window on DB time.
+        available_at=(datetime.now(UTC) + timedelta(hours=1)),
+        status=status,
+        processing_attempt_count=processing_attempt_count,
+        max_attempts=max_attempts,
+    )
+
+
+def _open_claim_window(
+    session: Session,
+    job_id: UUID,
+) -> None:
+    job = session.get(BackgroundJob, job_id)
+    assert job is not None
+    assert job.status in {
+        BackgroundJobStatus.QUEUED,
+        BackgroundJobStatus.RETRY_SCHEDULED,
+    }
+
+    database_now = session.execute(select(func.now())).scalar_one()
+    job.priority = _TEST_JOB_PRIORITY
+    job.available_at = database_now - timedelta(hours=1)
+    session.flush()
+
+
 def _service(
     session: Session,
 ) -> ClaimBackgroundJobsService:
@@ -73,9 +133,30 @@ def _claim_command(
     )
 
 
+def _claim_owned_job(
+    session: Session,
+    *,
+    job_id: UUID,
+    worker_id: str,
+) -> ClaimedBackgroundJob:
+    _clear_competing_claimable_jobs(job_id)
+    _open_claim_window(session, job_id)
+    claims = _service(session).execute(
+        _claim_command(
+            worker_id=worker_id,
+            batch_size=1,
+        )
+    )
+    assert len(claims) == 1
+    assert claims[0].job_id == job_id
+    return claims[0]
+
+
 def test_claims_eligible_jobs_in_expected_order(
     db_session: Session,
 ) -> None:
+    _clear_competing_claimable_jobs()
+
     now = datetime.now(UTC)
 
     lowest_priority = _new_job(
@@ -133,7 +214,7 @@ def test_claims_eligible_jobs_in_expected_order(
 def test_claim_sets_attempt_and_ownership_fields(
     db_session: Session,
 ) -> None:
-    job = _new_job(
+    job = _owned_claim_job(
         status=BackgroundJobStatus.RETRY_SCHEDULED,
         processing_attempt_count=2,
     )
@@ -141,16 +222,11 @@ def test_claim_sets_attempt_and_ownership_fields(
     db_session.add(job)
     db_session.flush()
 
-    claims = _service(db_session).execute(
-        _claim_command(
-            worker_id="worker-ownership",
-            batch_size=1,
-        )
+    claim = _claim_owned_job(
+        db_session,
+        job_id=job.id,
+        worker_id="worker-ownership",
     )
-
-    assert len(claims) == 1
-
-    claim = claims[0]
 
     assert job.status is BackgroundJobStatus.PROCESSING
     assert job.processing_attempt_count == 3
@@ -163,7 +239,7 @@ def test_claim_sets_attempt_and_ownership_fields(
 
 def test_claim_service_does_not_commit() -> None:
     engine = get_engine()
-    job = _new_job()
+    job = _owned_claim_job()
 
     try:
         with Session(engine) as seed_session:
@@ -172,14 +248,11 @@ def test_claim_service_does_not_commit() -> None:
             job_id = job.id
 
         with Session(engine) as claim_session:
-            claims = _service(claim_session).execute(
-                _claim_command(
-                    worker_id="worker-no-commit",
-                    batch_size=1,
-                )
+            _claim_owned_job(
+                claim_session,
+                job_id=job_id,
+                worker_id="worker-no-commit",
             )
-
-            assert claims[0].job_id == job_id
 
             with Session(engine) as independent_session:
                 persisted = independent_session.get(
@@ -200,7 +273,7 @@ def test_claim_service_does_not_commit() -> None:
 
 def test_claim_rollback_leaves_job_eligible() -> None:
     engine = get_engine()
-    job = _new_job()
+    job = _owned_claim_job()
 
     try:
         with Session(engine) as seed_session:
@@ -209,26 +282,21 @@ def test_claim_rollback_leaves_job_eligible() -> None:
             job_id = job.id
 
         with Session(engine) as first_session:
-            first_claims = _service(first_session).execute(
-                _claim_command(
-                    worker_id="worker-first",
-                    batch_size=1,
-                )
+            _claim_owned_job(
+                first_session,
+                job_id=job_id,
+                worker_id="worker-first",
             )
-
-            assert first_claims[0].job_id == job_id
             first_session.rollback()
 
         with Session(engine) as second_session:
-            second_claims = _service(second_session).execute(
-                _claim_command(
-                    worker_id="worker-second",
-                    batch_size=1,
-                )
+            second_claim = _claim_owned_job(
+                second_session,
+                job_id=job_id,
+                worker_id="worker-second",
             )
 
-            assert second_claims[0].job_id == job_id
-            assert second_claims[0].worker_id == "worker-second"
+            assert second_claim.worker_id == "worker-second"
             second_session.rollback()
     finally:
         with Session(engine) as cleanup_session:
@@ -238,13 +306,20 @@ def test_claim_rollback_leaves_job_eligible() -> None:
 
 def test_concurrent_workers_do_not_claim_same_jobs() -> None:
     engine = get_engine()
-    jobs = [_new_job() for _ in range(6)]
+    jobs = [_owned_claim_job() for _ in range(6)]
     barrier = Barrier(2)
 
     with Session(engine) as seed_session:
         seed_session.add_all(jobs)
         seed_session.commit()
         job_ids = {job.id for job in jobs}
+
+    _clear_competing_claimable_jobs(*job_ids)
+
+    with Session(engine) as readiness_session:
+        for job_id in job_ids:
+            _open_claim_window(readiness_session, job_id)
+        readiness_session.commit()
 
     def claim(worker_id: str) -> tuple[UUID, ...]:
         with Session(engine) as session:
