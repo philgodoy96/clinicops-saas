@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from clinicops.api.v1.billing.webhooks import get_billing_webhook_clock
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -377,8 +378,10 @@ def _prioritize_job(job_id: UUID) -> None:
     with Session(get_engine()) as session:
         job = session.get(BackgroundJob, job_id)
         assert job is not None
+        database_time = session.scalar(select(func.now()))
+        assert database_time is not None
         job.priority = _TEST_JOB_PRIORITY
-        job.available_at = datetime.now(UTC) - timedelta(minutes=1)
+        job.available_at = database_time - timedelta(hours=1)
         session.commit()
 
 
@@ -418,6 +421,8 @@ def _enqueue_replay_job(
     correlation_id: str,
 ) -> UUID:
     with Session(get_engine()) as session:
+        database_time = session.scalar(select(func.now()))
+        assert database_time is not None
         result = EnqueueBackgroundJobService(BackgroundJobRepository(session)).execute(
             EnqueueBackgroundJobCommand(
                 job_type=BILLING_WEBHOOK_PROCESS_JOB_TYPE,
@@ -426,7 +431,7 @@ def _enqueue_replay_job(
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
                 priority=_TEST_JOB_PRIORITY,
-                available_at=datetime.now(UTC) - timedelta(minutes=1),
+                available_at=database_time - timedelta(hours=1),
             )
         )
         session.commit()
@@ -455,6 +460,7 @@ def _cleanup(resources: TrackedResources) -> None:
 
         if resources.tenant_id is not None:
             tenant_id = resources.tenant_id
+            session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
             session.execute(
                 delete(ProviderOperation).where(ProviderOperation.tenant_id == tenant_id)
             )

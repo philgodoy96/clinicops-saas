@@ -43,9 +43,14 @@ from clinicops.api.v1.tenants.schemas import (
     TransferredTenantOwnershipResponse,
     TransferTenantOwnershipRequest,
 )
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.services.require_permission import (
     AuthorizedTenantContext,
+)
+from clinicops.core.request_context import (
+    get_correlation_id,
+    get_request_id,
 )
 from clinicops.invitations.services.issue_invitation import (
     IssueInvitationCommand,
@@ -57,7 +62,7 @@ from clinicops.invitations.services.queries import (
 from clinicops.invitations.services.revoke_invitation import (
     RevokeInvitationCommand,
 )
-from clinicops.tenancy.models import MembershipStatus
+from clinicops.tenancy.models import MembershipStatus, TenantRole
 from clinicops.tenancy.services.create_tenant import (
     CreateTenantCommand,
 )
@@ -216,6 +221,29 @@ def _invitation_response(
     )
 
 
+def _http_audit_context(
+    *,
+    user_id: UUID,
+    role: str,
+) -> AuditRecordingContext:
+    """Build audit attribution from trusted runtime request state."""
+
+    request_id = get_request_id()
+    correlation_id = get_correlation_id()
+
+    if request_id is None or correlation_id is None:
+        raise RuntimeError(
+            "Request context identifiers are required for audit recording.",
+        )
+
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=role,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
+
+
 @router.post(
     "",
     response_model=CreatedTenantResponse,
@@ -235,6 +263,10 @@ def create_tenant(
         CreateTenantCommand(
             name=payload.name,
             owner_user_id=principal.user_id,
+            audit_context=_http_audit_context(
+                user_id=principal.user_id,
+                role=TenantRole.OWNER.value,
+            ),
         ),
     )
     session.commit()
@@ -333,6 +365,10 @@ def change_tenant_membership_role(
             actor_user_id=context.user_id,
             membership_id=membership_id,
             role=payload.role,
+            audit_context=_http_audit_context(
+                user_id=context.user_id,
+                role=context.role.value,
+            ),
         ),
     )
     session.commit()
@@ -414,6 +450,10 @@ def remove_tenant_membership(
             tenant_id=context.tenant_id,
             actor_user_id=context.user_id,
             membership_id=membership_id,
+            audit_context=_http_audit_context(
+                user_id=context.user_id,
+                role=context.role.value,
+            ),
         ),
     )
     session.commit()
@@ -441,6 +481,10 @@ def transfer_tenant_ownership(
             tenant_id=context.tenant_id,
             expected_current_owner_user_id=context.user_id,
             new_owner_user_id=payload.new_owner_user_id,
+            audit_context=_http_audit_context(
+                user_id=context.user_id,
+                role=context.role.value,
+            ),
         ),
     )
     session.commit()

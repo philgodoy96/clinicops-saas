@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.tenancy.models import TenantRole
 
 
@@ -13,6 +14,7 @@ class ChangeMembershipRoleCommand:
     actor_user_id: UUID
     membership_id: UUID
     role: TenantRole
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,7 @@ class RemoveMembershipCommand:
     tenant_id: UUID
     actor_user_id: UUID
     membership_id: UUID
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)

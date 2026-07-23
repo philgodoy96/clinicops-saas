@@ -1,9 +1,10 @@
 from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.tenancy.exceptions import (
     MembershipActorNotAuthorizedError,
     MembershipAlreadyActiveError,
@@ -28,21 +29,37 @@ from clinicops.tenancy.services.membership_administration import (
 FIXED_NOW = datetime(2026, 8, 26, 15, 0, tzinfo=UTC)
 
 
+def audit_context(
+    *,
+    user_id: UUID | None = None,
+    role: str = TenantRole.OWNER.value,
+) -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=user_id or uuid4(),
+        role=role,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
+
+
 def test_membership_administration_commands_carry_trusted_identity() -> None:
     tenant_id = uuid4()
     actor_user_id = uuid4()
     membership_id = uuid4()
+    context = audit_context(user_id=actor_user_id)
 
     assert ChangeMembershipRoleCommand(
         tenant_id=tenant_id,
         actor_user_id=actor_user_id,
         membership_id=membership_id,
         role=TenantRole.ADMIN,
+        audit_context=context,
     ) == ChangeMembershipRoleCommand(
         tenant_id=tenant_id,
         actor_user_id=actor_user_id,
         membership_id=membership_id,
         role=TenantRole.ADMIN,
+        audit_context=context,
     )
     assert (
         DisableMembershipCommand(
@@ -65,8 +82,28 @@ def test_membership_administration_commands_carry_trusted_identity() -> None:
             tenant_id=tenant_id,
             actor_user_id=actor_user_id,
             membership_id=membership_id,
+            audit_context=context,
         ).membership_id
         == membership_id
+    )
+    assert (
+        ChangeMembershipRoleCommand(
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            membership_id=membership_id,
+            role=TenantRole.ADMIN,
+            audit_context=context,
+        ).audit_context
+        is context
+    )
+    assert (
+        RemoveMembershipCommand(
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            membership_id=membership_id,
+            audit_context=context,
+        ).audit_context
+        is context
     )
 
 
@@ -132,9 +169,29 @@ def test_membership_administration_contracts_are_frozen() -> None:
         actor_user_id=uuid4(),
         membership_id=uuid4(),
     )
+    context = audit_context()
+    role_command = ChangeMembershipRoleCommand(
+        tenant_id=uuid4(),
+        actor_user_id=uuid4(),
+        membership_id=uuid4(),
+        role=TenantRole.ADMIN,
+        audit_context=context,
+    )
+    remove_command = RemoveMembershipCommand(
+        tenant_id=uuid4(),
+        actor_user_id=uuid4(),
+        membership_id=uuid4(),
+        audit_context=context,
+    )
 
     with pytest.raises(FrozenInstanceError):
         command.membership_id = uuid4()  # type: ignore[misc]
+
+    with pytest.raises(FrozenInstanceError):
+        role_command.audit_context = audit_context()  # type: ignore[misc]
+
+    with pytest.raises(FrozenInstanceError):
+        remove_command.audit_context = audit_context()  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(

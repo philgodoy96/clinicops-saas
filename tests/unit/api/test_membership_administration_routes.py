@@ -13,6 +13,8 @@ from clinicops.api.errors import (
     register_exception_handlers,
 )
 from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
 from clinicops.api.v1.tenants.dependencies import (
@@ -23,6 +25,7 @@ from clinicops.api.v1.tenants.dependencies import (
     get_tenant_context,
 )
 from clinicops.api.v1.tenants.routes import router
+from clinicops.audit.enums import AuditSource
 from clinicops.authorization.services.resolve_tenant_context import (
     TenantContext,
 )
@@ -306,6 +309,8 @@ def test_membership_administration_dependencies_build_services() -> None:
 
 def test_change_membership_role_uses_authorized_context_and_commits() -> None:
     harness = build_test_app()
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(harness.application) as client:
         response = client.patch(
@@ -314,6 +319,10 @@ def test_change_membership_role_uses_authorized_context_and_commits() -> None:
                 f"{harness.target_membership_id}/role"
             ),
             json={"role": "admin"},
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
+            },
         )
 
     assert response.status_code == 200
@@ -330,14 +339,20 @@ def test_change_membership_role_uses_authorized_context_and_commits() -> None:
     }
     assert harness.role_service.call_count == 1
     assert harness.role_service.received_session is cast(Session, harness.session)
-    assert harness.role_service.received_command == (
-        ChangeMembershipRoleCommand(
-            tenant_id=harness.context.tenant_id,
-            actor_user_id=harness.context.user_id,
-            membership_id=harness.target_membership_id,
-            role=TenantRole.ADMIN,
-        )
+    assert harness.role_service.received_command is not None
+    assert harness.role_service.received_command.tenant_id == harness.context.tenant_id
+    assert harness.role_service.received_command.actor_user_id == harness.context.user_id
+    assert harness.role_service.received_command.membership_id == harness.target_membership_id
+    assert harness.role_service.received_command.role is TenantRole.ADMIN
+    assert (
+        harness.role_service.received_command.audit_context.actor.user_id == harness.context.user_id
     )
+    assert (
+        harness.role_service.received_command.audit_context.actor.role == harness.context.role.value
+    )
+    assert harness.role_service.received_command.audit_context.source is AuditSource.HTTP
+    assert harness.role_service.received_command.audit_context.request_id == request_id
+    assert harness.role_service.received_command.audit_context.correlation_id == correlation_id
     assert harness.session.commit_count == 1
 
 
@@ -385,21 +400,35 @@ def test_enable_membership_uses_path_without_request_body_and_commits() -> None:
 
 def test_remove_membership_returns_empty_204_and_commits() -> None:
     harness = build_test_app()
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(harness.application) as client:
         response = client.delete(
-            f"/tenants/{harness.context.tenant_id}/memberships/{harness.target_membership_id}"
+            f"/tenants/{harness.context.tenant_id}/memberships/{harness.target_membership_id}",
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
+            },
         )
 
     assert response.status_code == 204
     assert response.content == b""
-    assert harness.remove_service.received_command == (
-        RemoveMembershipCommand(
-            tenant_id=harness.context.tenant_id,
-            actor_user_id=harness.context.user_id,
-            membership_id=harness.target_membership_id,
-        )
+    assert harness.remove_service.received_command is not None
+    assert harness.remove_service.received_command.tenant_id == harness.context.tenant_id
+    assert harness.remove_service.received_command.actor_user_id == harness.context.user_id
+    assert harness.remove_service.received_command.membership_id == harness.target_membership_id
+    assert (
+        harness.remove_service.received_command.audit_context.actor.user_id
+        == harness.context.user_id
     )
+    assert (
+        harness.remove_service.received_command.audit_context.actor.role
+        == harness.context.role.value
+    )
+    assert harness.remove_service.received_command.audit_context.source is AuditSource.HTTP
+    assert harness.remove_service.received_command.audit_context.request_id == request_id
+    assert harness.remove_service.received_command.audit_context.correlation_id == correlation_id
     assert harness.session.commit_count == 1
 
 

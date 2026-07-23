@@ -1,5 +1,8 @@
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.policy import role_has_permission
 from clinicops.tenancy.exceptions import (
@@ -32,9 +35,13 @@ class ChangeMembershipRoleService:
     def __init__(
         self,
         repository: MembershipAdministrationRepository | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._repository = (
             repository if repository is not None else MembershipAdministrationRepository()
+        )
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
         )
 
     def execute(
@@ -100,6 +107,27 @@ class ChangeMembershipRoleService:
             self._repository.flush_and_refresh(
                 session,
                 target,
+            )
+
+            audit_context = command.audit_context
+            self._audit_recorder.record(
+                session,
+                RecordAuditLogCommand(
+                    tenant_id=target.tenant_id,
+                    actor=audit_context.actor,
+                    source=audit_context.source,
+                    action=AuditAction.MEMBERSHIP_ROLE_CHANGED.value,
+                    resource_type=AuditResourceType.MEMBERSHIP.value,
+                    resource_id=str(target.id),
+                    correlation_id=audit_context.correlation_id,
+                    metadata_version=1,
+                    metadata={
+                        "target_user_id": str(target.user_id),
+                        "previous_role": previous_role.value,
+                        "new_role": target.role.value,
+                    },
+                    request_id=audit_context.request_id,
+                ),
             )
 
         return ChangedMembershipRole(

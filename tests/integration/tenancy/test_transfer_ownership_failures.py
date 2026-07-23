@@ -9,6 +9,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.db.session import get_engine
 from clinicops.identity.models import User
 from clinicops.tenancy.exceptions import TenantOwnershipConflictError
@@ -23,6 +25,21 @@ from clinicops.tenancy.services.transfer_ownership import (
     TransferTenantOwnershipCommand,
     TransferTenantOwnershipService,
 )
+
+
+def audit_context(
+    *,
+    user_id: UUID,
+    role: str = TenantRole.OWNER.value,
+) -> AuditRecordingContext:
+    """Build one immutable HTTP audit context."""
+
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=role,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 class SimulatedOwnershipTransferError(RuntimeError):
@@ -122,6 +139,7 @@ def delete_ownership_fixture(
     """Delete a committed test aggregate and its global users."""
 
     with Session(get_engine()) as session:
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == fixture.tenant_id))
         session.execute(delete(Tenant).where(Tenant.id == fixture.tenant_id))
         session.execute(
             delete(User).where(
@@ -152,8 +170,9 @@ def transfer_in_independent_transaction(
                 session,
                 TransferTenantOwnershipCommand(
                     tenant_id=fixture.tenant_id,
-                    expected_current_owner_user_id=(fixture.owner_user_id),
+                    expected_current_owner_user_id=fixture.owner_user_id,
                     new_owner_user_id=new_owner_user_id,
+                    audit_context=audit_context(user_id=fixture.owner_user_id),
                 ),
             )
             session.commit()
@@ -246,8 +265,9 @@ def test_failure_after_demotion_rolls_back_original_owner() -> None:
                     session,
                     TransferTenantOwnershipCommand(
                         tenant_id=fixture.tenant_id,
-                        expected_current_owner_user_id=(fixture.owner_user_id),
-                        new_owner_user_id=(fixture.first_target_user_id),
+                        expected_current_owner_user_id=fixture.owner_user_id,
+                        new_owner_user_id=fixture.first_target_user_id,
+                        audit_context=audit_context(user_id=fixture.owner_user_id),
                     ),
                 )
 
@@ -272,8 +292,9 @@ def test_successful_transfer_remains_owned_by_calling_transaction() -> None:
                 session,
                 TransferTenantOwnershipCommand(
                     tenant_id=fixture.tenant_id,
-                    expected_current_owner_user_id=(fixture.owner_user_id),
+                    expected_current_owner_user_id=fixture.owner_user_id,
                     new_owner_user_id=fixture.first_target_user_id,
+                    audit_context=audit_context(user_id=fixture.owner_user_id),
                 ),
             )
             session.rollback()
