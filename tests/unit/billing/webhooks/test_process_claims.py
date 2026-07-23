@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.billing.enums import (
     BillingProvider,
     BillingWebhookEventStatus,
@@ -91,6 +92,19 @@ def _event(
     )
 
 
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.worker_system(
+        correlation_id="billing-webhook-claim-correlation",
+    )
+
+
+def _command(*, webhook_event_id: UUID) -> ProcessBillingWebhookEventCommand:
+    return ProcessBillingWebhookEventCommand(
+        webhook_event_id=webhook_event_id,
+        audit_context=_audit_context(),
+    )
+
+
 def _service(
     repository: RecordingWebhookEventRepository,
 ) -> ClaimBillingWebhookEventService:
@@ -140,7 +154,7 @@ def test_claim_persists_processing_ownership(
 
     claim = _service(repository).execute(
         cast(Session, object()),
-        ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+        _command(webhook_event_id=event.id),
     )
 
     assert repository.requested_event_id == event.id
@@ -181,7 +195,7 @@ def test_completed_event_returns_replay_without_mutation(
 
     claim = _service(repository).execute(
         cast(Session, object()),
-        ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+        _command(webhook_event_id=event.id),
     )
 
     assert claim.status is status
@@ -200,7 +214,7 @@ def test_processing_event_rejects_competing_claim() -> None:
     with pytest.raises(BillingWebhookEventProcessingConflictError):
         _service(repository).execute(
             cast(Session, object()),
-            ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+            _command(webhook_event_id=event.id),
         )
 
     assert repository.flush_count == 0
@@ -219,7 +233,7 @@ def test_terminal_failure_is_replayed_without_mutation() -> None:
     with pytest.raises(BillingWebhookEventTerminalFailureError) as exception_info:
         _service(repository).execute(
             cast(Session, object()),
-            ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+            _command(webhook_event_id=event.id),
         )
 
     assert exception_info.value.failure_code == "invalid_period_transition"
@@ -240,7 +254,7 @@ def test_terminal_failure_requires_persisted_failure_code() -> None:
     ):
         _service(repository).execute(
             cast(Session, object()),
-            ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+            _command(webhook_event_id=event.id),
         )
 
 
@@ -250,7 +264,7 @@ def test_missing_event_returns_not_found() -> None:
     with pytest.raises(BillingWebhookEventNotFoundError):
         _service(repository).execute(
             cast(Session, object()),
-            ProcessBillingWebhookEventCommand(webhook_event_id=uuid4()),
+            _command(webhook_event_id=uuid4()),
         )
 
     assert repository.flush_count == 0
@@ -270,7 +284,7 @@ def test_invalid_persisted_event_type_is_rejected() -> None:
     ):
         _service(repository).execute(
             cast(Session, object()),
-            ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+            _command(webhook_event_id=event.id),
         )
 
     assert repository.flush_count == 1

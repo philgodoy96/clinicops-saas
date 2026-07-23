@@ -9,6 +9,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -325,7 +327,12 @@ def _process_webhook(webhook_event_id: UUID) -> None:
     with Session(get_engine()) as session:
         ProcessBillingWebhookEventService(clock=FixedWebhookClock()).execute(
             session,
-            ProcessBillingWebhookEventCommand(webhook_event_id=webhook_event_id),
+            ProcessBillingWebhookEventCommand(
+                webhook_event_id=webhook_event_id,
+                audit_context=AuditRecordingContext.worker_system(
+                    correlation_id=(f"reconciliation-webhook-{webhook_event_id}"),
+                ),
+            ),
         )
 
 
@@ -368,6 +375,7 @@ def _cleanup(
                 delete(BillingWebhookEvent).where(BillingWebhookEvent.id.in_(webhook_event_ids))
             )
 
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
         session.execute(delete(Subscription).where(Subscription.tenant_id == tenant_id))
         session.execute(delete(BillingCustomer).where(BillingCustomer.tenant_id == tenant_id))
         session.execute(delete(Tenant).where(Tenant.id == tenant_id))
