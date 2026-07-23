@@ -27,11 +27,12 @@ ClinicOps currently has an implemented backend foundation covering:
 - billing reconciliation;
 - PostgreSQL-backed durable background jobs;
 - worker runtime and billing webhook job execution;
-- Docker Compose services for PostgreSQL, API, and worker.
+- Docker Compose services for PostgreSQL, API, and worker;
+- durable tenant-scoped audit-log persistence.
 
-The project is not yet at its final portfolio release. Durable auditability and tenant-owned operational domains remain under development.
+The Durable Audit Log Foundation is implemented. Domain audit emission and the tenant-scoped audit read API remain deliberate follow-up work. Tenant-owned operational domains also remain under development.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active macro-milestone is Durable Audit Logs.
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active implementation slice is Durable Audit Log Integrations.
 
 ---
 
@@ -70,7 +71,7 @@ ClinicOps is designed to support:
 - idempotent payment event processing;
 - PostgreSQL-backed background jobs;
 - retries with exponential backoff and jitter;
-- append-only audit logs;
+- durable tenant-scoped append-only audit persistence;
 - structured application logs;
 - request IDs;
 - correlation IDs;
@@ -255,7 +256,8 @@ The project explicitly addresses:
 - delayed and duplicate payment events;
 - concurrent background workers;
 - retries and dead jobs;
-- append-only audit records;
+- transactionally coupled append-only audit records;
+- idempotent audit recording for at-least-once workflows;
 - sensitive data handling;
 - request and workflow traceability.
 
@@ -308,18 +310,9 @@ Provider-specific payloads are translated before entering the billing domain. Pe
 
 ClinicOps distinguishes business audit records from operational application logs.
 
-Durable append-only audit persistence remains under development. The intended audit surface includes business-relevant actions such as:
+The Durable Audit Log Foundation provides tenant-scoped, append-only `AuditLogEntry` persistence with transactionally coupled recording, safe metadata normalization, and optional idempotency keys for at-least-once workflows. Domain services will record audit entries in the same caller-owned transaction as the corresponding business mutation so that audit persistence failure prevents the mutation from committing and rolled-back mutations leave no durable audit row.
 
-```text
-tenant.created
-tenant.ownership_transferred
-user.invited
-invitation.accepted
-patient.created
-appointment.cancelled
-invoice.paid
-tenant.suspended
-```
+Domain audit emission for tenants, memberships, invitations, billing, and workers, together with the tenant-scoped audit read API, remain intentional follow-up work.
 
 Structured application logs already record operational request behavior, including request and correlation identifiers.
 
@@ -332,7 +325,7 @@ webhook_signature_invalid
 database_error
 ```
 
-Audit records and application logs serve different purposes and are intended to be stored and reviewed separately.
+Audit records and application logs serve different purposes and are stored and reviewed separately. Detailed audit architecture lives in [Durable Audit Logs](docs/architecture/audit-logs.md).
 
 ---
 
@@ -356,6 +349,7 @@ Audit records and application logs serve different purposes and are intended to 
 - [Membership Administration Model](docs/architecture/membership-administration.md)
 - [Billing Lifecycle](docs/architecture/billing-lifecycle.md)
 - [Background Jobs](docs/architecture/background-jobs.md)
+- [Durable Audit Logs](docs/architecture/audit-logs.md)
 - [Security](docs/architecture/security.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
@@ -413,7 +407,8 @@ Additional architecture documents and ADRs will be added as implementation intro
 - PostgreSQL-backed durable jobs and worker runtime;
 - billing webhook asynchronous processing;
 - retry and dead-job behavior;
-- Durable Audit Logs;
+- Durable Audit Log Foundation;
+- Durable Audit Log Integrations;
 - Patients and Professionals domains;
 - Final Hardening and portfolio release.
 

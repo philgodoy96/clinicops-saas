@@ -918,6 +918,44 @@ content.
 The current queue and worker runtime do not expose a public job-administration
 API, manual replay endpoint, or administrative state-mutation surface.
 
+## Audit Log Security
+
+Durable audit entries record committed historical facts for exactly one tenant.
+They are distinct from operational application logs and do not reconstruct
+domain state.
+
+Security properties of the implemented foundation:
+
+- every `AuditLogEntry` is tenant-scoped;
+- user actors require a user ID;
+- system actors cannot carry user attribution or tenant-role snapshots;
+- metadata must be explicit, bounded, and JSON-native;
+- secrets, tokens, credentials, authorization headers, webhook signatures, raw
+  request bodies, raw webhook payloads, exception tracebacks, and ORM objects
+  must not be stored in metadata;
+- resource IDs are historical references, not authorization grants;
+- every audit read primitive requires the authorized tenant ID;
+- no public mutation API exists;
+- no application update or delete path exists;
+- request and correlation identifiers support end-to-end traceability;
+- optional globally unique idempotency keys protect equivalent worker replay
+  without providing exactly-once guarantees.
+
+Audit persistence participates in the same caller-owned transaction as the
+corresponding domain mutation. Audit persistence failure must prevent that
+mutation from committing, and rolled-back mutations must not leave durable
+audit rows.
+
+Runtime database roles should eventually be restricted from `UPDATE` and
+`DELETE` on audit rows. That restriction is deployment hardening and is not
+encoded as a migration trigger.
+
+Tenant-scoped audit HTTP read access, audit RBAC, domain audit emission,
+export, retention jobs, platform-wide audit history, and security-attempt event
+persistence remain intentional follow-up work.
+
+Detailed audit architecture lives in `docs/architecture/audit-logs.md`.
+
 ## Security Invariants
 
 - Webhook requests are authenticated before event parsing.
@@ -977,6 +1015,20 @@ API, manual replay endpoint, or administrative state-mutation surface.
 - Job payloads cannot select import paths or executable code.
 - The worker process exposes no public HTTP or administration surface.
 - Webhook authentication precedes durable event persistence and job enqueueing.
+- Audit entries belong to exactly one tenant.
+- User actors require a user ID.
+- System actors cannot carry user attribution or tenant-role snapshots.
+- Audit metadata is explicit, bounded, and JSON-native.
+- Audit metadata excludes secrets, tokens, credentials, authorization headers,
+  webhook signatures, raw request bodies, raw webhook payloads, exception
+  tracebacks, and ORM objects.
+- Audit resource IDs do not grant authorization.
+- Audit queries always start with the authorized tenant ID.
+- No public audit mutation API exists.
+- No application update or delete path exists for audit rows.
+- Audit request and correlation identifiers support traceability.
+- Audit idempotency keys protect equivalent replay without exactly-once
+  guarantees.
 
 ## Intentionally Deferred Security Controls
 
@@ -1025,3 +1077,22 @@ boundaries but are not yet part of the current reconciliation boundary:
 - invoice and payment reconciliation;
 - entitlement correction;
 - production worker isolation.
+
+The durable audit-log foundation now provides tenant-scoped persistence, actor
+and metadata contracts, idempotent recording, append-only application behavior,
+and tenant-scoped repository queries. The following audit controls remain
+intentional follow-up work:
+
+- domain audit emission for tenants, memberships, ownership transfer,
+  invitations, and billing;
+- worker-originated audit emission;
+- tenant-scoped audit HTTP read API;
+- audit RBAC;
+- public cursor and filter schemas;
+- API error mappings for audit queries;
+- export;
+- retention jobs;
+- platform-wide audit history;
+- security-attempt event persistence;
+- runtime database-role restrictions that deny `UPDATE` and `DELETE` on audit
+  rows.

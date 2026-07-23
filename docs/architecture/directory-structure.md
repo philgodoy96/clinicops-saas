@@ -67,13 +67,18 @@ clinicops-saas/
 │       ├── invitations/
 │       ├── jobs/
 │       │   └── runtime/
+│       ├── audit/
+│       │   ├── repositories/
+│       │   └── services/
 │       ├── tenancy/
 │       ├── main.py
 │       └── worker.py
 │
 ├── tests/
 │   ├── integration/
+│   │   └── audit/
 │   └── unit/
+│       └── audit/
 │
 ├── .dockerignore
 ├── .env.example
@@ -88,9 +93,10 @@ clinicops-saas/
 
 The current tree reflects implemented capabilities only. It includes the durable
 background-job queue package, worker runtime entry point, billing webhook job
-handler, Dockerfile, and Compose `api` and `worker` services. It does not yet
-include an audit package, patients package, professionals package, ADR
-directory, or dedicated security-test directory.
+handler, Durable Audit Log Foundation package, Dockerfile, and Compose `api`
+and `worker` services. It does not yet include patients or professionals
+packages, ADR directory, dedicated security-test directory, audit HTTP routes,
+audit transport schemas, or audit RBAC policies.
 
 ---
 
@@ -124,7 +130,7 @@ clinicops-saas/
 │       ├── invitations/
 │       ├── tenancy/
 │       ├── jobs/            # durable queue and worker runtime implemented
-│       ├── audit/           # Durable Audit Logs
+│       ├── audit/           # Durable Audit Log Foundation implemented
 │       ├── patients/        # Patients Domain
 │       ├── professionals/   # Professionals Domain
 │       ├── main.py
@@ -149,15 +155,20 @@ clinicops-saas/
 This is the target structure for remaining milestones.
 
 The durable `jobs/` queue foundation, worker runtime entry point, billing job
-handler packages, Dockerfile, and Compose worker service already exist in the
-current tree. The audit package, patients package, and professionals package
-remain target introductions.
+handler packages, Durable Audit Log Foundation package, Dockerfile, and Compose
+worker service already exist in the current tree. The patients package and
+professionals package remain target introductions. Audit HTTP routes, public
+audit schemas, audit RBAC policies, and domain-specific audit integrations
+remain intentional follow-up work inside or beside the existing `audit/`
+package.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
-Exact internal filenames inside `audit/`, `patients/`, and `professionals/`
-remain subject to system design approval for each milestone.
+Exact internal filenames inside `patients/` and `professionals/` remain subject
+to system design approval for each milestone. Audit foundation filenames are
+fixed by the implemented package; future audit HTTP and policy artifacts remain
+subject to the integration-slice design.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -230,7 +241,8 @@ Examples:
 - tenant isolation;
 - authentication and authorization;
 - billing and webhook processing;
-- background job queue and worker execution.
+- background job queue and worker execution;
+- durable audit logs.
 
 #### `docs/adr/`
 
@@ -415,12 +427,12 @@ tenancy
 invitations
 billing
 jobs
+audit
 ```
 
 Remaining current-release packages are expected to include:
 
 ```text
-audit
 patients
 professionals
 ```
@@ -428,6 +440,9 @@ professionals
 The `jobs` package owns the durable PostgreSQL-backed queue foundation and the
 worker runtime composition helpers under `jobs/runtime/`. Billing owns the
 `billing.webhook.process` handler and typed job payload under `billing/jobs/`.
+The `audit` package owns Durable Audit Log Foundation persistence, contracts,
+metadata normalization, idempotent recording, and tenant-scoped query
+primitives.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -921,6 +936,82 @@ src/clinicops/db/models.py
 
 ---
 
+## Audit Package
+
+The implemented audit package provides the Durable Audit Log Foundation under
+`src/clinicops`.
+
+```text
+src/clinicops/
+└── audit/
+    ├── contracts.py
+    ├── enums.py
+    ├── exceptions.py
+    ├── metadata.py
+    ├── models.py
+    ├── repositories/
+    │   └── audit_log_repository.py
+    └── services/
+        └── record_audit_log.py
+```
+
+Supporting tests and schema migration:
+
+```text
+tests/
+├── unit/audit/
+└── integration/audit/
+
+docs/architecture/audit-logs.md
+migrations/versions/0009_add_audit_log_entries.py
+```
+
+Capability-level ownership:
+
+```text
+models.py
+    -> AuditLogEntry persistence and database-generated recorded_at
+
+enums.py
+    -> actor types and audit sources
+
+contracts.py
+    -> typed actor, command, and recorded-entry contracts
+
+exceptions.py
+    -> audit-foundation application errors
+
+metadata.py
+    -> bounded, deterministic, JSON-native metadata normalization
+
+repositories/
+    -> insert-only persistence, tenant-scoped lookup, and cursor pagination
+
+services/
+    -> RecordAuditLogService validation, idempotent recording, and flush
+```
+
+Intentionally deferred under audit:
+
+```text
+audit HTTP routes
+public audit schemas
+audit RBAC policies
+domain-specific audit integrations
+export and retention jobs
+platform-wide audit history
+```
+
+Detailed audit semantics live in `docs/architecture/audit-logs.md`.
+
+Audit models are registered centrally through:
+
+```text
+src/clinicops/db/models.py
+```
+
+---
+
 ## 11. Naming Guidance
 
 Use entity-oriented names for persistent models and transport schemas.
@@ -1030,7 +1121,8 @@ Examples:
 - background job enqueue, claim, completion, failure, concurrency, and
   worker-runtime behavior;
 - end-to-end billing webhook job execution;
-- audit persistence once Durable Audit Logs lands.
+- audit persistence, idempotent recording, tenant isolation, concurrency, and
+  rollback coupling.
 
 ---
 

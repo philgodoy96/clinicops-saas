@@ -52,18 +52,21 @@ Fake Payment Provider and Webhook Security
 Idempotent Webhook Processing
 Billing Reconciliation and Concurrency Protections
 Background Jobs & Worker
+Durable Audit Log Foundation
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, and API and worker container services.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, and the Durable Audit Log Foundation.
 
 Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
 
 Background Jobs & Worker is complete. Periodic reconciliation scheduling remains intentionally deferred beyond that milestone.
 
+The Durable Audit Log Foundation is complete. Domain audit emission and the tenant-scoped audit read API remain the next implementation slice.
+
 ### Remaining current-release milestones
 
 ```text
-Durable Audit Logs
+Durable Audit Log Integrations
     |
 Patients Domain
     |
@@ -72,7 +75,7 @@ Professionals Domain
 Final Hardening & Portfolio Release
 ```
 
-Durable Audit Logs is the active macro-milestone.
+Durable Audit Log Integrations is the active implementation slice.
 
 This documentation-alignment work corrects public project scope. It is not itself a functional milestone.
 
@@ -128,52 +131,103 @@ deferred.
 
 ---
 
-## 5. Milestone 1 — Durable Audit Logs
+## 5. Completed — Durable Audit Log Foundation
 
 ### Objective
 
-Introduce append-only, tenant-scoped business audit records distinct from application logs.
+Introduce append-only, tenant-scoped business audit persistence distinct from
+application logs, without yet emitting domain events or exposing an audit HTTP
+read API.
 
-### Primary Deliverables
+### Completed slices
 
-- append-only audit records;
-- tenant-scoped audit ownership;
-- actor identity;
-- action;
-- resource type and ID;
-- request ID;
-- correlation ID;
-- safe metadata;
-- transactional audit emission;
-- secret-redaction policy;
-- authorized tenant-scoped read access.
+- persistence model and migration;
+- actor and source contracts;
+- metadata validation;
+- idempotent recording;
+- append-only application surface;
+- tenant-scoped repository queries;
+- stable cursor pagination;
+- concurrency and rollback tests;
+- security and architecture documentation.
 
-### Engineering Risks
+### Engineering risks addressed
 
 - audit records confused with application logs;
-- secrets or excessive patient data stored in metadata;
-- audit records modified after creation;
-- critical workflows committing without required audit history.
+- secrets or non-JSON-native values stored in metadata;
+- audit rows updated or deleted through the application surface;
+- domain mutations committing without coupled audit persistence;
+- rolled-back mutations leaving durable audit rows;
+- unscoped audit queries;
+- conflicting idempotent replay.
 
-### Test Focus
+### Completion criteria met
 
-- audit persistence;
-- actor and resource context;
-- identifier propagation;
-- tenant audit isolation;
-- append-only behavior;
-- sensitive field exclusion;
-- authorized read access.
+- tenant-scoped `AuditLogEntry` rows persist through migration `0009`;
+- `RecordAuditLogService` validates actors, sources, and metadata, then flushes
+  without committing;
+- equivalent idempotent replay reuses an existing entry and conflicting replay
+  is detected;
+- repository queries remain tenant-scoped with stable
+  `recorded_at DESC, id DESC` ordering;
+- concurrency, tenant-isolation, and rollback coupling are covered by tests;
+- public architecture and security documentation describe the foundation
+  boundary.
 
-### Completion Criteria
-
-- business workflows can create durable audit records;
-- tenant audit history can be queried safely;
-- audit records remain distinct from operational logs.
+Domain integrations and the tenant-scoped audit read API remain intentional
+follow-up work.
 
 ---
 
-## 6. Milestone 2 — Patients Domain
+## 6. Milestone 1 — Durable Audit Log Integrations
+
+### Objective
+
+Integrate the Durable Audit Log Foundation into domain workflows and expose
+authorized tenant-scoped audit read access.
+
+### Primary Deliverables
+
+- tenant lifecycle audit emission;
+- membership and ownership audit emission;
+- invitation audit emission;
+- billing audit emission;
+- worker-originated audit records;
+- tenant-scoped read API;
+- audit RBAC;
+- public filters and cursor transport;
+- API error mappings for audit queries.
+
+### Engineering Risks
+
+- critical workflows committing without required audit history;
+- audit emission outside the caller-owned domain transaction;
+- unauthorized cross-tenant audit reads;
+- resource IDs treated as authorization grants;
+- public schemas leaking unsafe metadata;
+- worker replay creating duplicate or conflicting audit rows.
+
+### Test Focus
+
+- domain mutation and audit persistence in one transaction;
+- rollback coupling for failed auditable workflows;
+- worker-originated idempotent recording;
+- tenant audit isolation;
+- RBAC-enforced read access;
+- public filter and cursor behavior;
+- API error mappings.
+
+### Completion Criteria
+
+- approved domain workflows create durable audit records;
+- tenant audit history can be queried safely through the authorized HTTP API;
+- audit records remain distinct from operational logs;
+- deferred concerns such as export, retention jobs, and platform-wide audit
+  history remain outside this slice.
+
+---
+
+## 7. Milestone 2 — Patients Domain
 
 ### Objective
 
@@ -212,7 +266,7 @@ Implement tenant-owned patient records as operational clinic data, not platform 
 
 ---
 
-## 7. Milestone 3 — Professionals Domain
+## 8. Milestone 3 — Professionals Domain
 
 ### Objective
 
@@ -251,7 +305,7 @@ Implement tenant-owned professional profiles distinct from global Users and Memb
 
 ---
 
-## 8. Milestone 4 — Final Hardening & Portfolio Release
+## 9. Milestone 4 — Final Hardening & Portfolio Release
 
 ### Objective
 
@@ -301,7 +355,7 @@ Stabilize the integrated system and prepare the repository as a coherent portfol
 
 ---
 
-## 9. Intentionally Deferred Extensions
+## 10. Intentionally Deferred Extensions
 
 The following capabilities are intentionally deferred beyond the current release and are not remaining macro-milestones:
 
@@ -330,7 +384,7 @@ Appointments remain a natural future extension after Patients and Professionals 
 
 ---
 
-## 10. Cross-Cutting Quality Requirements
+## 11. Cross-Cutting Quality Requirements
 
 Every implementation milestone must preserve the following qualities.
 
@@ -366,7 +420,7 @@ Technical documentation must change when implemented behavior or architecture ch
 
 ---
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 A milestone is complete when:
 
@@ -383,7 +437,7 @@ A milestone is complete when:
 
 ---
 
-## 12. Roadmap Evolution
+## 13. Roadmap Evolution
 
 This roadmap may evolve as implementation reveals new constraints.
 
@@ -406,9 +460,9 @@ Roadmap changes should preserve the project's primary goals:
 
 ---
 
-## 13. Next Milestone
+## 14. Next Milestone
 
-The next implementation milestone is Durable Audit Logs.
+The next implementation milestone is Durable Audit Log Integrations.
 
 Patients Domain, Professionals Domain, and Final Hardening & Portfolio Release
 follow in that order.
