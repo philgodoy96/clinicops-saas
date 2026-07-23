@@ -95,9 +95,36 @@ def _open_claim_window(job_id: UUID) -> None:
         session.commit()
 
 
+def _open_claim_window_in_session(
+    session: Session,
+    job_id: UUID,
+) -> None:
+    job = session.get(BackgroundJob, job_id)
+    assert job is not None
+    assert job.status in {
+        BackgroundJobStatus.QUEUED,
+        BackgroundJobStatus.RETRY_SCHEDULED,
+    }
+
+    database_now = session.execute(select(func.now())).scalar_one()
+    job.priority = _TEST_JOB_PRIORITY
+    job.available_at = database_now - timedelta(hours=1)
+    session.flush()
+
+
 def _prepare_owned_job_for_claim(job_id: UUID) -> None:
     _clear_competing_claimable_jobs(job_id)
     _open_claim_window(job_id)
+
+
+def _prepare_owned_job_for_reclaim(
+    session: Session,
+    job_id: UUID,
+) -> None:
+    # Clear first, then open the window in the same transaction as the claim so
+    # the job is not globally visible to leftover claimable rows between commits.
+    _clear_competing_claimable_jobs(job_id)
+    _open_claim_window_in_session(session, job_id)
 
 
 def _claim_one(
@@ -116,21 +143,6 @@ def _claim_one(
     assert len(claims) == 1
 
     return claims[0]
-
-
-def _make_available_for_retry(
-    session: Session,
-    *,
-    job_id: UUID,
-) -> None:
-    job = session.get(BackgroundJob, job_id)
-
-    assert job is not None
-    assert job.status is BackgroundJobStatus.RETRY_SCHEDULED
-
-    database_now = session.execute(select(func.now())).scalar_one()
-    job.available_at = database_now - timedelta(seconds=1)
-    session.commit()
 
 
 def _delete_job(job_id: UUID) -> None:
@@ -178,11 +190,7 @@ def test_retryable_failure_can_later_succeed() -> None:
             assert first_failure.status is BackgroundJobStatus.RETRY_SCHEDULED
             assert first_failure.processing_attempt_count == 1
 
-            _make_available_for_retry(
-                session,
-                job_id=job_id,
-            )
-            _clear_competing_claimable_jobs(job_id)
+            _prepare_owned_job_for_reclaim(session, job_id)
 
             second_claim = _claim_one(
                 session,
@@ -264,11 +272,7 @@ def test_retryable_failures_dead_letter_at_maximum_attempts() -> None:
             assert first_failure.status is BackgroundJobStatus.RETRY_SCHEDULED
             assert first_failure.processing_attempt_count == 1
 
-            _make_available_for_retry(
-                session,
-                job_id=job_id,
-            )
-            _clear_competing_claimable_jobs(job_id)
+            _prepare_owned_job_for_reclaim(session, job_id)
 
             second_claim = _claim_one(
                 session,

@@ -96,6 +96,47 @@ class RecordedAuditLog:
     recorded_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class AuditLogCursor:
+    recorded_at: datetime
+    audit_log_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class AuditLogQuery:
+    tenant_id: UUID
+    limit: int
+    cursor: AuditLogCursor | None = None
+    action: str | None = None
+    resource_type: str | None = None
+    resource_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AuditLogRecord:
+    audit_log_id: UUID
+    tenant_id: UUID
+    actor_type: AuditActorType
+    actor_user_id: UUID | None
+    actor_role: str | None
+    source: AuditSource
+    action: str
+    resource_type: str
+    resource_id: str
+    metadata_version: int
+    metadata: JSONObject
+    idempotency_key: str | None
+    request_id: str | None
+    correlation_id: str
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AuditLogPage:
+    items: tuple[AuditLogRecord, ...]
+    next_cursor: AuditLogCursor | None
+
+
 def _normalize_role(
     value: str | None,
 ) -> str | None:
@@ -120,6 +161,10 @@ def _normalize_role(
 
 __all__ = [
     "AuditActor",
+    "AuditLogCursor",
+    "AuditLogPage",
+    "AuditLogQuery",
+    "AuditLogRecord",
     "JSONObject",
     "JSONScalar",
     "JSONValue",
