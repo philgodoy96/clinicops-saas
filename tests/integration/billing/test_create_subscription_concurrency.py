@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.exceptions import (
     BillingCustomerAlreadyExistsError,
     BillingSubscriptionAlreadyExistsError,
@@ -27,7 +29,8 @@ from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionService,
 )
 from clinicops.db.session import get_engine
-from clinicops.tenancy.models import Tenant
+from clinicops.identity.models import User, UserStatus
+from clinicops.tenancy.models import Tenant, TenantRole
 
 FIXED_NOW = datetime(
     2026,
@@ -43,8 +46,41 @@ class FixedClock:
         return FIXED_NOW
 
 
-def _persist_tenant() -> UUID:
+def _audit_context(*, user_id: UUID) -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=TenantRole.OWNER.value,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
+
+
+def _create_user(prefix: str) -> User:
+    return User(
+        email=f"{prefix}-{uuid4()}@example.com",
+        status=UserStatus.ACTIVE,
+    )
+
+
+def _persist_user(user: User) -> UUID:
+    with Session(get_engine()) as session:
+        session.add(user)
+        session.flush()
+        user_id = user.id
+        session.commit()
+
+    return user_id
+
+
+def _delete_user(user_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        session.execute(delete(User).where(User.id == user_id))
+        session.commit()
+
+
+def _persist_tenant() -> tuple[UUID, UUID]:
     tenant_id = uuid4()
+    audit_user_id = _persist_user(_create_user("billing-concurrency-audit"))
 
     with Session(get_engine()) as session:
         session.add(
@@ -55,11 +91,12 @@ def _persist_tenant() -> UUID:
         )
         session.commit()
 
-    return tenant_id
+    return tenant_id, audit_user_id
 
 
 def _cleanup_tenant(tenant_id: UUID) -> None:
     with Session(get_engine()) as session:
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
         session.execute(delete(ProviderOperation).where(ProviderOperation.tenant_id == tenant_id))
         session.execute(delete(Subscription).where(Subscription.tenant_id == tenant_id))
         session.execute(delete(BillingCustomer).where(BillingCustomer.tenant_id == tenant_id))
@@ -72,6 +109,7 @@ def _execute_concurrently(
     service: CreateBillingSubscriptionService,
     barrier: Barrier,
     tenant_id: UUID,
+    audit_user_id: UUID,
     idempotency_key: str,
 ) -> str:
     with Session(get_engine()) as session:
@@ -84,6 +122,7 @@ def _execute_concurrently(
                     tenant_id=tenant_id,
                     price_code="starter_monthly",
                     idempotency_key=idempotency_key,
+                    audit_context=_audit_context(user_id=audit_user_id),
                 ),
             )
         except ProviderOperationInProgressError:
@@ -97,6 +136,7 @@ def _execute_concurrently(
             session.rollback()
             return "conflict"
 
+        session.commit()
         return "replayed" if result.replayed else "created"
 
 
@@ -128,7 +168,7 @@ def _count_rows(
 
 
 def test_concurrent_same_key_requests_create_one_subscription() -> None:
-    tenant_id = _persist_tenant()
+    tenant_id, audit_user_id = _persist_tenant()
 
     try:
         service = CreateBillingSubscriptionService(
@@ -144,6 +184,7 @@ def test_concurrent_same_key_requests_create_one_subscription() -> None:
                     service=service,
                     barrier=barrier,
                     tenant_id=tenant_id,
+                    audit_user_id=audit_user_id,
                     idempotency_key=("same-concurrent-request"),
                 )
                 for _ in range(2)
@@ -165,10 +206,11 @@ def test_concurrent_same_key_requests_create_one_subscription() -> None:
         )
     finally:
         _cleanup_tenant(tenant_id)
+        _delete_user(audit_user_id)
 
 
 def test_concurrent_different_keys_preserve_local_uniqueness() -> None:
-    tenant_id = _persist_tenant()
+    tenant_id, audit_user_id = _persist_tenant()
 
     try:
         service = CreateBillingSubscriptionService(
@@ -188,6 +230,7 @@ def test_concurrent_different_keys_preserve_local_uniqueness() -> None:
                     service=service,
                     barrier=barrier,
                     tenant_id=tenant_id,
+                    audit_user_id=audit_user_id,
                     idempotency_key=key,
                 )
                 for key in keys
@@ -211,3 +254,4 @@ def test_concurrent_different_keys_preserve_local_uniqueness() -> None:
         assert operation_count >= 2
     finally:
         _cleanup_tenant(tenant_id)
+        _delete_user(audit_user_id)

@@ -4,6 +4,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.billing.catalog import get_price_definition
 from clinicops.billing.enums import (
     ProviderOperationStatus,
@@ -61,6 +65,7 @@ class ScheduleBillingPlanChangeCommand:
     tenant_id: UUID
     target_price_code: str
     idempotency_key: str
+    audit_context: AuditRecordingContext
 
     def __post_init__(self) -> None:
         target_price = get_price_definition(self.target_price_code.strip())
@@ -102,6 +107,7 @@ class ScheduleBillingPlanChangeService:
         subscription_repository: (SubscriptionRepository | None) = None,
         provider_operation_repository: (ProviderOperationRepository | None) = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._payment_provider = payment_provider
         self._subscription_repository = (
@@ -115,6 +121,9 @@ class ScheduleBillingPlanChangeService:
             else ProviderOperationRepository()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -125,6 +134,8 @@ class ScheduleBillingPlanChangeService:
 
         This orchestrator intentionally owns multiple commits. The provider
         call occurs only after the durable operation claim has committed.
+        The final local plan mutation and audit entry are left for the caller
+        transaction owner to commit.
         """
 
         reservation = self._reserve_with_conflict_recovery(
@@ -133,7 +144,6 @@ class ScheduleBillingPlanChangeService:
         )
 
         if reservation.replayed_result is not None:
-            session.commit()
             return reservation.replayed_result
 
         session.commit()
@@ -177,14 +187,12 @@ class ScheduleBillingPlanChangeService:
             raise
 
         try:
-            scheduled = self._apply_provider_result(
+            return self._apply_provider_result(
                 session=session,
                 command=command,
                 operation_id=operation_id,
                 result=provider_result,
             )
-            session.commit()
-            return scheduled
         except (
             BillingPlanChangeAlreadyPendingError,
             BillingPlanChangeSamePriceError,
@@ -404,6 +412,8 @@ class ScheduleBillingPlanChangeService:
         if subscription.pending_price_code is not None:
             raise BillingPlanChangeAlreadyPendingError()
 
+        previous_plan = subscription.plan
+        target_plan = get_price_definition(command.target_price_code).plan
         subscription.pending_price_code = command.target_price_code
         subscription.provider_state_version = result.provider_state_version
         self._subscription_repository.flush(session)
@@ -424,6 +434,31 @@ class ScheduleBillingPlanChangeService:
         )
         self._provider_operation_repository.flush(
             session,
+        )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=subscription.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.BILLING_SUBSCRIPTION_PLAN_CHANGED.value,
+                resource_type=AuditResourceType.SUBSCRIPTION.value,
+                resource_id=str(subscription.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "previous_plan": previous_plan.value,
+                    "new_plan": target_plan.value,
+                },
+                # Domain commands already carry a durable client idempotency key
+                # used for provider-operation replay protection.
+                idempotency_key=(
+                    f"subscription-plan-changed:{subscription.id}:{command.idempotency_key}"
+                ),
+                request_id=audit_context.request_id,
+            ),
         )
 
         return self._to_result(

@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 from clinicops.api.v1.billing.dependencies import (
     get_billing_manage_tenant_context,
 )
+from clinicops.audit.models import AuditLogEntry
+from clinicops.authorization.permissions import TenantPermission
+from clinicops.authorization.services.require_permission import (
+    AuthorizedTenantContext,
+)
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -36,8 +41,9 @@ from clinicops.billing.providers.idempotency import (
     build_provider_operation_key,
 )
 from clinicops.db.session import get_engine
+from clinicops.identity.models import User, UserStatus
 from clinicops.main import create_app
-from clinicops.tenancy.models import Tenant
+from clinicops.tenancy.models import Tenant, TenantRole
 
 PERIOD_START = datetime(
     2026,
@@ -53,6 +59,27 @@ class ApiPlanChangeFixture:
     tenant_id: UUID
     subscription_id: UUID
     provider: FakePaymentProvider
+    audit_user_id: UUID
+
+
+def _persist_user() -> UUID:
+    with Session(get_engine()) as session:
+        user = User(
+            email=f"plan-change-api-{uuid4()}@example.com",
+            status=UserStatus.ACTIVE,
+        )
+        session.add(user)
+        session.flush()
+        user_id = user.id
+        session.commit()
+
+    return user_id
+
+
+def _delete_user(user_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        session.execute(delete(User).where(User.id == user_id))
+        session.commit()
 
 
 def _persist_subscription(
@@ -63,6 +90,7 @@ def _persist_subscription(
     tenant_id = uuid4()
     billing_customer_id = uuid4()
     subscription_id = uuid4()
+    audit_user_id = _persist_user()
 
     provider_customer = resolved_provider.create_customer(
         CreateCustomerRequest(provider_operation_key=(build_provider_operation_key(uuid4())))
@@ -120,11 +148,16 @@ def _persist_subscription(
         tenant_id=tenant_id,
         subscription_id=subscription_id,
         provider=resolved_provider,
+        audit_user_id=audit_user_id,
     )
 
 
-def _cleanup_tenants(*tenant_ids: UUID) -> None:
+def _cleanup_fixture(*fixtures: ApiPlanChangeFixture) -> None:
+    tenant_ids = [fixture.tenant_id for fixture in fixtures]
+    user_ids = [fixture.audit_user_id for fixture in fixtures]
+
     with Session(get_engine()) as session:
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id.in_(tenant_ids)))
         session.execute(
             delete(ProviderOperation).where(ProviderOperation.tenant_id.in_(tenant_ids))
         )
@@ -133,22 +166,34 @@ def _cleanup_tenants(*tenant_ids: UUID) -> None:
         session.execute(delete(Tenant).where(Tenant.id.in_(tenant_ids)))
         session.commit()
 
+    for user_id in user_ids:
+        _delete_user(user_id)
+
 
 def _authorized_application(
-    provider: FakePaymentProvider,
+    fixture: ApiPlanChangeFixture,
 ) -> FastAPI:
     application = create_app()
-    application.state.payment_provider = provider
-    application.dependency_overrides[get_billing_manage_tenant_context] = lambda: object()
+    application.state.payment_provider = fixture.provider
+    application.dependency_overrides[get_billing_manage_tenant_context] = lambda: (
+        AuthorizedTenantContext(
+            user_id=fixture.audit_user_id,
+            session_id=uuid4(),
+            tenant_id=fixture.tenant_id,
+            membership_id=uuid4(),
+            role=TenantRole.OWNER,
+            granted_permission=TenantPermission.BILLING_MANAGE,
+        )
+    )
 
     return application
 
 
 @contextmanager
 def _client(
-    provider: FakePaymentProvider,
+    fixture: ApiPlanChangeFixture,
 ) -> Iterator[TestClient]:
-    application = _authorized_application(provider)
+    application = _authorized_application(fixture)
 
     try:
         with TestClient(application) as client:
@@ -184,7 +229,7 @@ def test_plan_change_api_persists_pending_target() -> None:
     fixture = _persist_subscription()
 
     try:
-        with _client(fixture.provider) as client:
+        with _client(fixture) as client:
             response = client.post(
                 (f"/api/v1/tenants/{fixture.tenant_id}/billing/subscription/plan-change"),
                 headers={
@@ -218,7 +263,7 @@ def test_plan_change_api_persists_pending_target() -> None:
         assert operations[0].operation_type is ProviderOperationType.CHANGE_PLAN
         assert operations[0].status is ProviderOperationStatus.SUCCEEDED
     finally:
-        _cleanup_tenants(fixture.tenant_id)
+        _cleanup_fixture(fixture)
 
 
 def test_plan_change_api_replays_same_client_key() -> None:
@@ -232,7 +277,7 @@ def test_plan_change_api_replays_same_client_key() -> None:
     }
 
     try:
-        with _client(fixture.provider) as client:
+        with _client(fixture) as client:
             first = client.post(
                 path,
                 headers=headers,
@@ -253,7 +298,7 @@ def test_plan_change_api_replays_same_client_key() -> None:
         assert len(operations) == 1
         assert operations[0].attempt_count == 1
     finally:
-        _cleanup_tenants(fixture.tenant_id)
+        _cleanup_fixture(fixture)
 
 
 def test_plan_change_api_is_scoped_to_path_tenant() -> None:
@@ -262,7 +307,7 @@ def test_plan_change_api_is_scoped_to_path_tenant() -> None:
     untouched = _persist_subscription(provider=provider)
 
     try:
-        with _client(provider) as client:
+        with _client(selected) as client:
             response = client.post(
                 (f"/api/v1/tenants/{selected.tenant_id}/billing/subscription/plan-change"),
                 headers={
@@ -284,7 +329,4 @@ def test_plan_change_api_is_scoped_to_path_tenant() -> None:
         assert len(_load_operations(selected.tenant_id)) == 1
         assert len(_load_operations(untouched.tenant_id)) == 0
     finally:
-        _cleanup_tenants(
-            selected.tenant_id,
-            untouched.tenant_id,
-        )
+        _cleanup_fixture(selected, untouched)

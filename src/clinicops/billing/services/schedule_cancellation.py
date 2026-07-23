@@ -4,6 +4,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.billing.enums import (
     ProviderOperationStatus,
     ProviderOperationType,
@@ -58,6 +62,7 @@ class ScheduleBillingSubscriptionCancellationCommand:
 
     tenant_id: UUID
     idempotency_key: str
+    audit_context: AuditRecordingContext
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -92,6 +97,7 @@ class ScheduleBillingSubscriptionCancellationService:
         subscription_repository: (SubscriptionRepository | None) = None,
         provider_operation_repository: (ProviderOperationRepository | None) = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._payment_provider = payment_provider
         self._subscription_repository = (
@@ -105,6 +111,9 @@ class ScheduleBillingSubscriptionCancellationService:
             else ProviderOperationRepository()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -115,6 +124,8 @@ class ScheduleBillingSubscriptionCancellationService:
 
         This orchestrator intentionally owns multiple commits. The provider
         call occurs only after the durable operation claim has committed.
+        The final local cancellation mutation and audit entry are left for the
+        caller transaction owner to commit.
         """
 
         reservation = self._reserve_with_conflict_recovery(
@@ -123,7 +134,6 @@ class ScheduleBillingSubscriptionCancellationService:
         )
 
         if reservation.replayed_result is not None:
-            session.commit()
             return reservation.replayed_result
 
         session.commit()
@@ -166,14 +176,12 @@ class ScheduleBillingSubscriptionCancellationService:
             raise
 
         try:
-            scheduled = self._apply_provider_result(
+            return self._apply_provider_result(
                 session=session,
                 command=command,
                 operation_id=operation_id,
                 result=provider_result,
             )
-            session.commit()
-            return scheduled
         except (
             BillingSubscriptionAlreadyCanceledError,
             BillingSubscriptionCancellationPendingError,
@@ -386,6 +394,7 @@ class ScheduleBillingSubscriptionCancellationService:
                 "Provider cancellation result did not advance the provider state version."
             )
 
+        previous_status = subscription.status
         requested_at = self._clock.now()
         subscription.cancel_at_period_end = True
         subscription.cancellation_requested_at = requested_at
@@ -407,6 +416,31 @@ class ScheduleBillingSubscriptionCancellationService:
         )
         self._provider_operation_repository.flush(
             session,
+        )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=subscription.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.BILLING_SUBSCRIPTION_CANCELLED.value,
+                resource_type=AuditResourceType.SUBSCRIPTION.value,
+                resource_id=str(subscription.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "previous_status": previous_status.value,
+                    "new_status": SubscriptionStatus.CANCELED.value,
+                },
+                # Domain commands already carry a durable client idempotency key
+                # used for provider-operation replay protection.
+                idempotency_key=(
+                    f"subscription-cancelled:{subscription.id}:{command.idempotency_key}"
+                ),
+                request_id=audit_context.request_id,
+            ),
         )
 
         return self._to_result(

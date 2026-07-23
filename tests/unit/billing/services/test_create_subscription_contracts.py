@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -20,6 +21,16 @@ from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionCommand,
     CreatedBillingSubscription,
 )
+from clinicops.tenancy.models import TenantRole
+
+
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=uuid4(),
+        role=TenantRole.OWNER.value,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 def _created_subscription(
@@ -80,6 +91,7 @@ def test_command_normalizes_price_code_and_idempotency_key() -> None:
         tenant_id=uuid4(),
         price_code=" starter_monthly ",
         idempotency_key=" request-key-123 ",
+        audit_context=_audit_context(),
     )
 
     assert command.price_code == "starter_monthly"
@@ -92,7 +104,23 @@ def test_command_rejects_unsupported_price_code() -> None:
             tenant_id=uuid4(),
             price_code="unsupported_price",
             idempotency_key="request-key-123",
+            audit_context=_audit_context(),
         )
+
+
+def test_command_requires_immutable_audit_context() -> None:
+    context = _audit_context()
+    command = CreateBillingSubscriptionCommand(
+        tenant_id=uuid4(),
+        price_code="starter_monthly",
+        idempotency_key="request-key-123",
+        audit_context=context,
+    )
+
+    assert command.audit_context is context
+
+    with pytest.raises(FrozenInstanceError):
+        command.audit_context = _audit_context()  # type: ignore[misc]
 
 
 def test_command_is_immutable() -> None:
@@ -100,6 +128,7 @@ def test_command_is_immutable() -> None:
         tenant_id=uuid4(),
         price_code="starter_monthly",
         idempotency_key="request-key-123",
+        audit_context=_audit_context(),
     )
 
     with pytest.raises(FrozenInstanceError):
