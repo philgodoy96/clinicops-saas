@@ -9,6 +9,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import AuditActor
+from clinicops.audit.enums import AuditSource
+from clinicops.audit.models import AuditLogEntry
 from clinicops.db.session import get_engine
 from clinicops.identity.models import User
 from clinicops.invitations.exceptions import (
@@ -44,6 +48,28 @@ class FixedClock:
 
     def now(self) -> datetime:
         return FIXED_NOW
+
+
+def user_audit_context(*, user_id: UUID) -> AuditRecordingContext:
+    """Build one immutable HTTP user audit context."""
+
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=TenantRole.OWNER.value,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
+
+
+def system_audit_context() -> AuditRecordingContext:
+    """Build one immutable system HTTP audit context."""
+
+    return AuditRecordingContext(
+        actor=AuditActor.system(),
+        source=AuditSource.HTTP,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +189,7 @@ def delete_committed_fixture(
     """Delete committed tenancy and identity fixtures."""
 
     with Session(get_engine()) as session:
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
         session.execute(delete(Invitation).where(Invitation.tenant_id == tenant_id))
         session.execute(delete(Tenant).where(Tenant.id == tenant_id))
         session.execute(delete(User).where(User.id.in_(user_ids)))
@@ -196,6 +223,9 @@ def test_concurrent_issuance_creates_one_pending_invitation() -> None:
                         issuer_user_id=fixture.owner_user_id,
                         invited_email=invited_email,
                         role=TenantRole.STAFF,
+                        audit_context=user_audit_context(
+                            user_id=fixture.owner_user_id,
+                        ),
                     ),
                 )
                 session.commit()
@@ -245,7 +275,10 @@ def test_concurrent_acceptance_creates_exactly_one_membership() -> None:
             try:
                 service.execute(
                     session,
-                    AcceptInvitationCommand(token=fixture.token),
+                    AcceptInvitationCommand(
+                        token=fixture.token,
+                        audit_context=system_audit_context(),
+                    ),
                 )
                 session.commit()
                 return "accepted"
@@ -301,7 +334,10 @@ def test_acceptance_and_revocation_produce_one_terminal_state() -> None:
             try:
                 service.execute(
                     session,
-                    AcceptInvitationCommand(token=fixture.token),
+                    AcceptInvitationCommand(
+                        token=fixture.token,
+                        audit_context=system_audit_context(),
+                    ),
                 )
                 session.commit()
                 return "accepted"
@@ -322,6 +358,9 @@ def test_acceptance_and_revocation_produce_one_terminal_state() -> None:
                         tenant_id=fixture.tenant_id,
                         invitation_id=fixture.invitation_id,
                         actor_user_id=fixture.owner_user_id,
+                        audit_context=user_audit_context(
+                            user_id=fixture.owner_user_id,
+                        ),
                     ),
                 )
                 session.commit()

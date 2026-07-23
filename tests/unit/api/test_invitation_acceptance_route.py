@@ -12,12 +12,15 @@ from clinicops.api.errors import (
     register_exception_handlers,
 )
 from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
 from clinicops.api.v1.invitations.dependencies import (
     get_accept_invitation_service,
 )
 from clinicops.api.v1.invitations.routes import router
+from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.invitations.exceptions import (
     InvitationTokenInvalidError,
 )
@@ -133,6 +136,8 @@ def test_accept_invitation_translates_secrets_and_commits() -> None:
     ) = build_test_app()
     token = " token-with-deliberate-whitespace "
     password = " Password-With-Spaces-2026 "
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(application) as client:
         response = client.post(
@@ -140,6 +145,10 @@ def test_accept_invitation_translates_secrets_and_commits() -> None:
             json={
                 "token": token,
                 "password": password,
+            },
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
             },
         )
 
@@ -158,10 +167,15 @@ def test_accept_invitation_translates_secrets_and_commits() -> None:
     }
     assert service.call_count == 1
     assert service.received_session is cast(Session, session)
-    assert service.received_command == AcceptInvitationCommand(
-        token=token,
-        password=password,
-    )
+    assert service.received_command is not None
+    assert service.received_command.token == token
+    assert service.received_command.password == password
+    assert service.received_command.audit_context.actor.actor_type is AuditActorType.SYSTEM
+    assert service.received_command.audit_context.actor.user_id is None
+    assert service.received_command.audit_context.actor.role is None
+    assert service.received_command.audit_context.source is AuditSource.HTTP
+    assert service.received_command.audit_context.request_id == request_id
+    assert service.received_command.audit_context.correlation_id == correlation_id
     assert session.commit_count == 1
     assert "token" not in response.json()
     assert "password" not in response.json()
@@ -175,6 +189,8 @@ def test_accept_invitation_allows_missing_password() -> None:
         _,
     ) = build_test_app()
     token = "existing-user-token"
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(application) as client:
         response = client.post(
@@ -182,13 +198,20 @@ def test_accept_invitation_allows_missing_password() -> None:
             json={
                 "token": token,
             },
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
+            },
         )
 
     assert response.status_code == 200
-    assert service.received_command == AcceptInvitationCommand(
-        token=token,
-        password=None,
-    )
+    assert service.received_command is not None
+    assert service.received_command.token == token
+    assert service.received_command.password is None
+    assert service.received_command.audit_context.actor.actor_type is AuditActorType.SYSTEM
+    assert service.received_command.audit_context.source is AuditSource.HTTP
+    assert service.received_command.audit_context.request_id == request_id
+    assert service.received_command.audit_context.correlation_id == correlation_id
     assert session.commit_count == 1
 
 

@@ -12,6 +12,8 @@ from clinicops.api.errors import (
     register_exception_handlers,
 )
 from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
 from clinicops.api.v1.tenants.dependencies import (
@@ -21,6 +23,7 @@ from clinicops.api.v1.tenants.dependencies import (
     get_tenant_context,
 )
 from clinicops.api.v1.tenants.routes import router
+from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.authorization.services.resolve_tenant_context import (
     TenantContext,
 )
@@ -260,12 +263,19 @@ def test_issue_tenant_invitation_uses_context_and_commits() -> None:
         _,
     ) = build_test_app()
 
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
+
     with TestClient(application) as client:
         response = client.post(
             f"/tenants/{context.tenant_id}/invitations",
             json={
                 "invited_email": "member@example.com",
                 "role": "staff",
+            },
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
             },
         )
 
@@ -274,14 +284,17 @@ def test_issue_tenant_invitation_uses_context_and_commits() -> None:
     assert response.status_code == 201
     assert body["tenant_id"] == str(context.tenant_id)
     assert body["token"] == "one-time-secret"
-    assert issue_service.received_command == (
-        IssueInvitationCommand(
-            tenant_id=context.tenant_id,
-            issuer_user_id=context.user_id,
-            invited_email="member@example.com",
-            role=TenantRole.STAFF,
-        )
-    )
+    assert issue_service.received_command is not None
+    assert issue_service.received_command.tenant_id == context.tenant_id
+    assert issue_service.received_command.issuer_user_id == context.user_id
+    assert issue_service.received_command.invited_email == "member@example.com"
+    assert issue_service.received_command.role is TenantRole.STAFF
+    assert issue_service.received_command.audit_context.actor.actor_type is AuditActorType.USER
+    assert issue_service.received_command.audit_context.actor.user_id == context.user_id
+    assert issue_service.received_command.audit_context.actor.role == context.role.value
+    assert issue_service.received_command.audit_context.source is AuditSource.HTTP
+    assert issue_service.received_command.audit_context.request_id == request_id
+    assert issue_service.received_command.audit_context.correlation_id == correlation_id
     assert issue_service.received_session is cast(Session, session)
     assert session.commit_count == 1
 
@@ -296,19 +309,30 @@ def test_revoke_tenant_invitation_uses_context_and_commits() -> None:
         revoke_service,
     ) = build_test_app()
     invitation_id = list_service.results[0].id
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(application) as client:
-        response = client.post(f"/tenants/{context.tenant_id}/invitations/{invitation_id}/revoke")
+        response = client.post(
+            f"/tenants/{context.tenant_id}/invitations/{invitation_id}/revoke",
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
+            },
+        )
 
     assert response.status_code == 200
     assert response.json()["invitation_id"] == str(invitation_id)
-    assert revoke_service.received_command == (
-        RevokeInvitationCommand(
-            tenant_id=context.tenant_id,
-            invitation_id=invitation_id,
-            actor_user_id=context.user_id,
-        )
-    )
+    assert revoke_service.received_command is not None
+    assert revoke_service.received_command.tenant_id == context.tenant_id
+    assert revoke_service.received_command.invitation_id == invitation_id
+    assert revoke_service.received_command.actor_user_id == context.user_id
+    assert revoke_service.received_command.audit_context.actor.actor_type is AuditActorType.USER
+    assert revoke_service.received_command.audit_context.actor.user_id == context.user_id
+    assert revoke_service.received_command.audit_context.actor.role == context.role.value
+    assert revoke_service.received_command.audit_context.source is AuditSource.HTTP
+    assert revoke_service.received_command.audit_context.request_id == request_id
+    assert revoke_service.received_command.audit_context.correlation_id == correlation_id
     assert revoke_service.received_session is cast(Session, session)
     assert session.commit_count == 1
 

@@ -536,6 +536,10 @@ def issue_tenant_invitation(
             issuer_user_id=context.user_id,
             invited_email=payload.invited_email,
             role=payload.role,
+            audit_context=_http_audit_context(
+                user_id=context.user_id,
+                role=context.role.value,
+            ),
         ),
     )
     session.commit()
@@ -563,6 +567,10 @@ def revoke_tenant_invitation(
             tenant_id=context.tenant_id,
             invitation_id=invitation_id,
             actor_user_id=context.user_id,
+            audit_context=_http_audit_context(
+                user_id=context.user_id,
+                role=context.role.value,
+            ),
         ),
     )
     session.commit()

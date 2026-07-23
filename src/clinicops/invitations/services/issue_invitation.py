@@ -5,6 +5,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.core.clock import Clock, SystemClock
 from clinicops.identity.email import canonicalize_email
 from clinicops.identity.repository import UserRepository
@@ -50,6 +54,7 @@ class IssueInvitationCommand:
     issuer_user_id: UUID
     invited_email: str
     role: TenantRole
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,7 @@ class IssueInvitationService:
         invitation_repository: InvitationRepository | None = None,
         clock: Clock | None = None,
         token_factory: Callable[[], InvitationToken] | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._tenant_repository = (
             tenant_repository if tenant_repository is not None else TenantRepository()
@@ -85,6 +91,9 @@ class IssueInvitationService:
         self._clock = clock if clock is not None else SystemClock()
         self._token_factory = (
             token_factory if token_factory is not None else generate_invitation_token
+        )
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
         )
 
     def execute(
@@ -167,6 +176,26 @@ class IssueInvitationService:
         self._invitation_repository.add_and_flush(
             session,
             invitation,
+        )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=invitation.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.INVITATION_CREATED.value,
+                resource_type=AuditResourceType.INVITATION.value,
+                resource_id=str(invitation.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "invited_role": invitation.role.value,
+                },
+                idempotency_key=f"invitation-created:{invitation.id}",
+                request_id=audit_context.request_id,
+            ),
         )
 
         return IssuedInvitation(

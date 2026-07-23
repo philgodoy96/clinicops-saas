@@ -4,6 +4,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.core.clock import Clock, SystemClock
 from clinicops.identity.exceptions import UserDisabledError
 from clinicops.identity.models import UserStatus
@@ -36,6 +40,7 @@ class AcceptInvitationCommand:
     """Input required to accept a tenant invitation."""
 
     token: str = field(repr=False)
+    audit_context: AuditRecordingContext
     password: str | None = field(default=None, repr=False)
 
 
@@ -62,6 +67,7 @@ class AcceptInvitationService:
         user_repository: UserRepository | None = None,
         create_user_service: CreateUserService | None = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._invitation_repository = (
             invitation_repository if invitation_repository is not None else InvitationRepository()
@@ -74,6 +80,9 @@ class AcceptInvitationService:
             create_user_service if create_user_service is not None else CreateUserService()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -170,6 +179,27 @@ class AcceptInvitationService:
         self._tenant_repository.add_membership_and_flush(
             session,
             membership,
+        )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=invitation.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.INVITATION_ACCEPTED.value,
+                resource_type=AuditResourceType.INVITATION.value,
+                resource_id=str(invitation.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "accepted_user_id": str(user_id),
+                    "accepted_role": invitation.role.value,
+                },
+                idempotency_key=f"invitation-accepted:{invitation.id}",
+                request_id=audit_context.request_id,
+            ),
         )
 
         return AcceptedInvitation(

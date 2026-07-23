@@ -4,6 +4,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.core.clock import Clock, SystemClock
 from clinicops.invitations.exceptions import (
     InvitationActorNotAuthorizedError,
@@ -38,6 +42,7 @@ class RevokeInvitationCommand:
     tenant_id: UUID
     invitation_id: UUID
     actor_user_id: UUID
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,7 @@ class RevokeInvitationService:
         tenant_repository: TenantRepository | None = None,
         invitation_repository: InvitationRepository | None = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._tenant_repository = (
             tenant_repository if tenant_repository is not None else TenantRepository()
@@ -65,6 +71,9 @@ class RevokeInvitationService:
             invitation_repository if invitation_repository is not None else InvitationRepository()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -123,6 +132,26 @@ class RevokeInvitationService:
         invitation.status = InvitationStatus.REVOKED
         invitation.revoked_at = revoked_at
         self._invitation_repository.flush(session)
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=invitation.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.INVITATION_REVOKED.value,
+                resource_type=AuditResourceType.INVITATION.value,
+                resource_id=str(invitation.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "invited_role": invitation.role.value,
+                },
+                idempotency_key=f"invitation-revoked:{invitation.id}",
+                request_id=audit_context.request_id,
+            ),
+        )
 
         return RevokedInvitation(
             invitation_id=invitation.id,
