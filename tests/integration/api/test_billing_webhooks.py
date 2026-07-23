@@ -150,9 +150,7 @@ def _cleanup_events(
                 for event_id in event_ids
             ]
             session.execute(
-                delete(BackgroundJob).where(
-                    BackgroundJob.idempotency_key.in_(idempotency_keys)
-                )
+                delete(BackgroundJob).where(BackgroundJob.idempotency_key.in_(idempotency_keys))
             )
 
         session.execute(
