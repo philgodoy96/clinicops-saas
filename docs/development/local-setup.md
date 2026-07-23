@@ -331,7 +331,42 @@ uv run python -c "from clinicops.main import app; print([(path, list(methods)) f
 
 ---
 
-## 13. Run with Docker Compose
+## 13. Verify Tenant Audit Log Reads
+
+OWNER and ADMIN members can list tenant audit history. STAFF members are denied.
+There is no public audit-write endpoint.
+
+```text
+GET /api/v1/tenants/{tenant_id}/audit-logs
+```
+
+Optional query parameters:
+
+```text
+limit
+cursor
+action
+resource_type
+resource_id
+```
+
+Example with an authenticated Bearer access token for an OWNER or ADMIN
+membership:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/tenants/$TenantId/audit-logs?limit=50" `
+  -Headers @{ Authorization = "Bearer $AccessToken" }
+```
+
+Replace `$TenantId` and `$AccessToken` with values from your local session.
+Malformed cursors return HTTP `400`. Out-of-range limit values return HTTP
+`422`. Unauthenticated requests return HTTP `401`. Unauthorized memberships
+return HTTP `403`.
+
+---
+
+## 14. Run with Docker Compose
 
 API and worker processes are built from the same Docker image. Compose
 services are `postgres`, `api`, and `worker`.
@@ -410,7 +445,7 @@ in the repository.
 
 ---
 
-## 14. Run Automated Tests
+## 15. Run Automated Tests
 
 Ensure PostgreSQL is running:
 
@@ -442,7 +477,7 @@ Integration database tests use the local PostgreSQL instance configured through 
 
 ---
 
-## 15. Run Quality Checks
+## 16. Run Quality Checks
 
 Format the code:
 
@@ -495,7 +530,7 @@ uv build
 
 ---
 
-## 16. Create a Database Migration
+## 17. Create a Database Migration
 
 After changing SQLAlchemy models, create a migration:
 
@@ -516,7 +551,7 @@ Generated migrations must not be accepted without reviewing their upgrade and do
 
 ---
 
-## 17. Stop or Reset Local Infrastructure
+## 18. Stop or Reset Local Infrastructure
 
 Stop the PostgreSQL container while preserving its data:
 
@@ -542,7 +577,7 @@ docker compose down -v
 
 ---
 
-## 18. Common Troubleshooting
+## 19. Common Troubleshooting
 
 ### PostgreSQL Port Conflict
 
@@ -670,7 +705,7 @@ uv sync --locked --all-groups
 
 ---
 
-## 19. Local Development Checklist
+## 20. Local Development Checklist
 
 Before starting application work:
 

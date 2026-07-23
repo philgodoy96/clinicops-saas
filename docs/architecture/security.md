@@ -924,35 +924,53 @@ Durable audit entries record committed historical facts for exactly one tenant.
 They are distinct from operational application logs and do not reconstruct
 domain state.
 
-Security properties of the implemented foundation:
+Security properties of the implemented audit milestone:
 
 - every `AuditLogEntry` is tenant-scoped;
+- every read starts with an authorized tenant ID;
+- no unscoped repository query is exposed;
 - user actors require a user ID;
 - system actors cannot carry user attribution or tenant-role snapshots;
+- authenticated HTTP mutations use trusted user attribution with a historical
+  role snapshot that does not grant future permissions;
+- public invitation acceptance is system-attributed over HTTP and does not treat
+  the invitation token as proof of an authenticated user actor;
+- billing webhook worker processing is system-attributed with durable
+  correlation propagation and optional originating request ID;
 - metadata must be explicit, bounded, and JSON-native;
 - secrets, tokens, credentials, authorization headers, webhook signatures, raw
-  request bodies, raw webhook payloads, exception tracebacks, and ORM objects
-  must not be stored in metadata;
+  request bodies, raw webhook payloads, payment data, provider response
+  snapshots, exception tracebacks, ORM objects, and internal audit idempotency
+  keys must not be stored in metadata or exposed publicly;
 - resource IDs are historical references, not authorization grants;
-- every audit read primitive requires the authorized tenant ID;
-- no public mutation API exists;
+- no public audit-write endpoint exists;
 - no application update or delete path exists;
 - request and correlation identifiers support end-to-end traceability;
 - optional globally unique idempotency keys protect equivalent worker replay
   without providing exactly-once guarantees.
 
-Audit persistence participates in the same caller-owned transaction as the
+Audit persistence participates in the same local transaction as the
 corresponding domain mutation. Audit persistence failure must prevent that
 mutation from committing, and rolled-back mutations must not leave durable
 audit rows.
 
-Runtime database roles should eventually be restricted from `UPDATE` and
-`DELETE` on audit rows. That restriction is deployment hardening and is not
-encoded as a migration trigger.
+Tenant-scoped audit reads require authentication, membership, and
+`audit_log:read` permission:
 
-Tenant-scoped audit HTTP read access, audit RBAC, domain audit emission,
-export, retention jobs, platform-wide audit history, and security-attempt event
-persistence remain intentional follow-up work.
+```text
+OWNER -> allowed
+ADMIN -> allowed
+STAFF -> denied
+```
+
+Runtime database roles should be restricted from `UPDATE` and `DELETE` on audit
+rows. That restriction is deployment hardening and is not encoded as a
+migration trigger. A database superuser remains outside the application-level
+append-only guarantee.
+
+Retention is currently indefinite. Export, retention automation,
+platform-wide audit history, and security-attempt event persistence remain
+intentional follow-up work.
 
 Detailed audit architecture lives in `docs/architecture/audit-logs.md`.
 
@@ -1018,13 +1036,19 @@ Detailed audit architecture lives in `docs/architecture/audit-logs.md`.
 - Audit entries belong to exactly one tenant.
 - User actors require a user ID.
 - System actors cannot carry user attribution or tenant-role snapshots.
+- Authenticated HTTP mutations use trusted user attribution.
+- Public invitation acceptance is system-attributed.
+- Billing webhook worker processing is system-attributed.
+- Actor-role snapshots do not grant permissions.
 - Audit metadata is explicit, bounded, and JSON-native.
 - Audit metadata excludes secrets, tokens, credentials, authorization headers,
-  webhook signatures, raw request bodies, raw webhook payloads, exception
-  tracebacks, and ORM objects.
+  webhook signatures, raw request bodies, raw webhook payloads, payment data,
+  provider response snapshots, exception tracebacks, ORM objects, and internal
+  audit idempotency keys.
 - Audit resource IDs do not grant authorization.
 - Audit queries always start with the authorized tenant ID.
-- No public audit mutation API exists.
+- OWNER and ADMIN may read tenant audit history; STAFF may not.
+- No public audit-write API exists.
 - No application update or delete path exists for audit rows.
 - Audit request and correlation identifiers support traceability.
 - Audit idempotency keys protect equivalent replay without exactly-once
@@ -1078,21 +1102,25 @@ boundaries but are not yet part of the current reconciliation boundary:
 - entitlement correction;
 - production worker isolation.
 
-The durable audit-log foundation now provides tenant-scoped persistence, actor
-and metadata contracts, idempotent recording, append-only application behavior,
-and tenant-scoped repository queries. The following audit controls remain
-intentional follow-up work:
+Durable Audit Logs now provide tenant-scoped persistence, trusted actor
+attribution, domain and worker emission, idempotent recording, append-only
+application behavior, and a tenant-scoped OWNER/ADMIN read API. The following
+audit controls remain intentional follow-up work:
 
-- domain audit emission for tenants, memberships, ownership transfer,
-  invitations, and billing;
-- worker-originated audit emission;
-- tenant-scoped audit HTTP read API;
-- audit RBAC;
-- public cursor and filter schemas;
-- API error mappings for audit queries;
-- export;
-- retention jobs;
-- platform-wide audit history;
+- audit mutation endpoints;
+- global or platform-wide audit API;
+- audit export or CSV download;
+- retention jobs and archival workflows;
+- tenant-configurable retention;
+- metadata search;
+- actor filter;
+- date-range filter;
+- platform-administrator audit view;
 - security-attempt event persistence;
+- table partitioning;
+- metadata GIN index;
+- frontend audit screens;
+- Patients audit integration;
+- Professionals audit integration;
 - runtime database-role restrictions that deny `UPDATE` and `DELETE` on audit
   rows.

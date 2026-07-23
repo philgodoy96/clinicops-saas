@@ -55,6 +55,8 @@ clinicops-saas/
 ├── src/
 │   └── clinicops/
 │       ├── api/
+│       │   └── v1/
+│       │       └── audit_logs.py
 │       ├── authentication/
 │       ├── authorization/
 │       ├── billing/
@@ -93,10 +95,9 @@ clinicops-saas/
 
 The current tree reflects implemented capabilities only. It includes the durable
 background-job queue package, worker runtime entry point, billing webhook job
-handler, Durable Audit Log Foundation package, Dockerfile, and Compose `api`
-and `worker` services. It does not yet include patients or professionals
-packages, ADR directory, dedicated security-test directory, audit HTTP routes,
-audit transport schemas, or audit RBAC policies.
+handler, Durable Audit Logs package, tenant-scoped audit HTTP route, Dockerfile,
+and Compose `api` and `worker` services. It does not yet include patients or
+professionals packages, ADR directory, or a dedicated security-test directory.
 
 ---
 
@@ -130,7 +131,7 @@ clinicops-saas/
 │       ├── invitations/
 │       ├── tenancy/
 │       ├── jobs/            # durable queue and worker runtime implemented
-│       ├── audit/           # Durable Audit Log Foundation implemented
+│       ├── audit/           # Durable Audit Logs implemented
 │       ├── patients/        # Patients Domain
 │       ├── professionals/   # Professionals Domain
 │       ├── main.py
@@ -155,20 +156,16 @@ clinicops-saas/
 This is the target structure for remaining milestones.
 
 The durable `jobs/` queue foundation, worker runtime entry point, billing job
-handler packages, Durable Audit Log Foundation package, Dockerfile, and Compose
-worker service already exist in the current tree. The patients package and
-professionals package remain target introductions. Audit HTTP routes, public
-audit schemas, audit RBAC policies, and domain-specific audit integrations
-remain intentional follow-up work inside or beside the existing `audit/`
-package.
+handler packages, Durable Audit Logs package, audit HTTP route, Dockerfile, and
+Compose worker service already exist in the current tree. The patients package
+and professionals package remain target introductions.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
 Exact internal filenames inside `patients/` and `professionals/` remain subject
-to system design approval for each milestone. Audit foundation filenames are
-fixed by the implemented package; future audit HTTP and policy artifacts remain
-subject to the integration-slice design.
+to system design approval for each milestone. Audit filenames are fixed by the
+implemented package and API route.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -440,9 +437,11 @@ professionals
 The `jobs` package owns the durable PostgreSQL-backed queue foundation and the
 worker runtime composition helpers under `jobs/runtime/`. Billing owns the
 `billing.webhook.process` handler and typed job payload under `billing/jobs/`.
-The `audit` package owns Durable Audit Log Foundation persistence, contracts,
-metadata normalization, idempotent recording, and tenant-scoped query
-primitives.
+The `audit` package owns Durable Audit Log persistence, contracts, metadata
+normalization, recording context, idempotent recording, cursor transport, read
+policy, public schemas, and tenant-scoped query services. Domain packages emit
+audit facts through `AuditRecorder`, and `src/clinicops/api/v1/audit_logs.py`
+exposes the tenant-scoped read API.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -938,20 +937,28 @@ src/clinicops/db/models.py
 
 ## Audit Package
 
-The implemented audit package provides the Durable Audit Log Foundation under
-`src/clinicops`.
+The implemented audit package provides Durable Audit Logs under `src/clinicops`.
 
 ```text
 src/clinicops/
+├── api/v1/
+│   └── audit_logs.py
 └── audit/
+    ├── actions.py
+    ├── context.py
     ├── contracts.py
+    ├── cursor.py
     ├── enums.py
     ├── exceptions.py
     ├── metadata.py
     ├── models.py
+    ├── policies.py
+    ├── recording.py
+    ├── schemas.py
     ├── repositories/
     │   └── audit_log_repository.py
     └── services/
+        ├── list_audit_logs.py
         └── record_audit_log.py
 ```
 
@@ -969,6 +976,24 @@ migrations/versions/0009_add_audit_log_entries.py
 Capability-level ownership:
 
 ```text
+actions.py
+    -> stable audit action and resource-type catalogs
+
+context.py
+    -> AuditRecordingContext attribution helpers
+
+cursor.py
+    -> opaque URL-safe Base64 cursor encode and decode
+
+policies.py
+    -> OWNER/ADMIN audit-read authorization
+
+recording.py
+    -> AuditRecorder and SqlAlchemyAuditRecorder composition
+
+schemas.py
+    -> public read response contracts omitting idempotency_key
+
 models.py
     -> AuditLogEntry persistence and database-generated recorded_at
 
@@ -979,7 +1004,7 @@ contracts.py
     -> typed actor, command, and recorded-entry contracts
 
 exceptions.py
-    -> audit-foundation application errors
+    -> audit application errors
 
 metadata.py
     -> bounded, deterministic, JSON-native metadata normalization
@@ -988,18 +1013,37 @@ repositories/
     -> insert-only persistence, tenant-scoped lookup, and cursor pagination
 
 services/
-    -> RecordAuditLogService validation, idempotent recording, and flush
+    -> RecordAuditLogService and ListAuditLogsService
+
+api/v1/audit_logs.py
+    -> tenant-scoped GET /tenants/{tenant_id}/audit-logs route
+```
+
+Domain integration points:
+
+```text
+tenancy services
+    -> tenant create, ownership transfer, membership role change, membership removal
+
+invitation services
+    -> issue, accept, revoke
+
+billing services
+    -> subscription create, plan change, cancellation
+
+billing webhook processing and worker handler
+    -> processed and ignored outcomes with worker system attribution
 ```
 
 Intentionally deferred under audit:
 
 ```text
-audit HTTP routes
-public audit schemas
-audit RBAC policies
-domain-specific audit integrations
 export and retention jobs
 platform-wide audit history
+metadata search
+actor and date-range filters
+Patients and Professionals audit integration
+frontend audit screens
 ```
 
 Detailed audit semantics live in `docs/architecture/audit-logs.md`.
