@@ -1,12 +1,18 @@
 from collections.abc import Callable
 from uuid import UUID
 
+from sqlalchemy.orm import Session
+
 from clinicops.billing.jobs.constants import (
     BILLING_WEBHOOK_PROCESS_JOB_TYPE,
     BILLING_WEBHOOK_PROCESS_PAYLOAD_VERSION,
 )
 from clinicops.billing.jobs.payloads import (
     ProcessBillingWebhookEventJobPayload,
+)
+from clinicops.billing.webhooks.process import (
+    ProcessBillingWebhookEventCommand,
+    ProcessBillingWebhookEventService,
 )
 from clinicops.jobs.contracts import (
     ClaimedBackgroundJob,
@@ -20,6 +26,8 @@ type ProcessBillingWebhookEvent = Callable[
     [UUID],
     None,
 ]
+
+type SessionFactory = Callable[[], Session]
 
 
 class ProcessBillingWebhookEventJobHandler:
@@ -62,7 +70,39 @@ class ProcessBillingWebhookEventJobHandler:
         self._process_webhook_event(payload.webhook_event_id)
 
 
+class SqlAlchemyBillingWebhookEventProcessor:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        process_service: ProcessBillingWebhookEventService | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._process_service = (
+            process_service if process_service is not None else ProcessBillingWebhookEventService()
+        )
+
+    def __call__(
+        self,
+        webhook_event_id: UUID,
+    ) -> None:
+        with self._session_factory() as session:
+            try:
+                self._process_service.execute(
+                    session,
+                    ProcessBillingWebhookEventCommand(
+                        webhook_event_id=webhook_event_id,
+                    ),
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+
 __all__ = [
     "ProcessBillingWebhookEvent",
     "ProcessBillingWebhookEventJobHandler",
+    "SessionFactory",
+    "SqlAlchemyBillingWebhookEventProcessor",
 ]
