@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from uuid import UUID
 
-from clinicops.audit.enums import AuditActorType
+from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.audit.exceptions import (
     AuditLogInvalidActorError,
 )
@@ -73,6 +74,28 @@ class AuditActor:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RecordAuditLogCommand:
+    tenant_id: UUID
+    actor: AuditActor
+    source: AuditSource
+    action: str
+    resource_type: str
+    resource_id: str
+    correlation_id: str
+    metadata_version: int = 1
+    metadata: JSONObject = field(default_factory=dict)
+    idempotency_key: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedAuditLog:
+    audit_log_id: UUID
+    created: bool
+    recorded_at: datetime
+
+
 def _normalize_role(
     value: str | None,
 ) -> str | None:
@@ -100,4 +123,6 @@ __all__ = [
     "JSONObject",
     "JSONScalar",
     "JSONValue",
+    "RecordAuditLogCommand",
+    "RecordedAuditLog",
 ]
