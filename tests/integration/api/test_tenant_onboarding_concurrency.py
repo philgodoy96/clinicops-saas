@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +10,10 @@ from httpx2 import ASGITransport, AsyncClient, Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
+)
 from clinicops.audit.models import AuditLogEntry
 from clinicops.authentication.models import AuthSession
 from clinicops.db.session import get_engine
@@ -503,3 +508,176 @@ def test_acceptance_and_revocation_produce_one_terminal_http_result(
         assert revocation.status_code == 200
         assert invitation_status is InvitationStatus.REVOKED
         assert membership_count == 0
+
+
+def assert_public_audit_item(item: dict[str, Any]) -> None:
+    """Reject sensitive fields from public audit API payloads."""
+
+    assert "idempotency_key" not in item
+    metadata = item["metadata"]
+    assert isinstance(metadata, dict)
+
+    for forbidden in (
+        "token",
+        "token_hash",
+        "password",
+        "password_hash",
+        "provider_customer_id",
+        "provider_subscription_id",
+        "raw_payload",
+        "idempotency_key",
+    ):
+        assert forbidden not in metadata
+
+
+def test_tenant_creation_is_readable_through_audit_api(
+    client: TestClient,
+    onboarding_concurrency_data: OnboardingConcurrencyData,
+) -> None:
+    owner = onboarding_concurrency_data.create_user(email_prefix="audit-create-owner")
+    owner_headers = login_headers(client, owner)
+    tenant_name = f"  Audit Readable Clinic {uuid4().hex[:8]}  "
+
+    create_response = client.post(
+        "/api/v1/tenants",
+        headers=owner_headers,
+        json={"name": tenant_name},
+    )
+
+    assert create_response.status_code == 201
+
+    payload = create_response.json()
+    tenant_id = UUID(payload["id"])
+    onboarding_concurrency_data.track_tenant(tenant_id)
+    request_id = create_response.headers[REQUEST_ID_HEADER]
+    correlation_id = create_response.headers[CORRELATION_ID_HEADER]
+
+    audit_response = client.get(
+        f"/api/v1/tenants/{tenant_id}/audit-logs",
+        headers=owner_headers,
+    )
+
+    assert audit_response.status_code == 200
+
+    body = audit_response.json()
+    items = body["items"]
+
+    assert body["next_cursor"] is None
+    assert len(items) == 1
+
+    item = items[0]
+
+    assert item["action"] == "tenant.created"
+    assert item["resource"] == {
+        "type": "tenant",
+        "id": str(tenant_id),
+    }
+    assert item["actor"] == {
+        "type": "user",
+        "user_id": str(owner.id),
+        "role": TenantRole.OWNER.value,
+    }
+    assert item["source"] == "http"
+    assert item["request_id"] == request_id
+    assert item["correlation_id"] == correlation_id
+    assert item["metadata"] == {
+        "tenant_name": payload["name"],
+    }
+    assert_public_audit_item(item)
+
+
+def test_invitation_issue_and_accept_appear_in_audit_timeline(
+    client: TestClient,
+    onboarding_concurrency_data: OnboardingConcurrencyData,
+) -> None:
+    owner = onboarding_concurrency_data.create_user(email_prefix="audit-invite-owner")
+    owner_headers = login_headers(client, owner)
+    tenant_id = create_tenant(
+        client,
+        headers=owner_headers,
+        data=onboarding_concurrency_data,
+        name="Audit Invitation Lifecycle Clinic",
+    )
+    invited_email = f"audit-invite-recipient-{uuid4().hex}@example.com"
+    onboarding_concurrency_data.track_email(invited_email)
+
+    invitation_id, token = issue_invitation(
+        client,
+        tenant_id=tenant_id,
+        headers=owner_headers,
+        invited_email=invited_email,
+    )
+
+    accept_response = client.post(
+        "/api/v1/invitations/accept",
+        json={
+            "token": token,
+            "password": PASSWORD,
+        },
+    )
+
+    assert accept_response.status_code == 200
+
+    accepted_user_id = accept_response.json()["user_id"]
+    accept_request_id = accept_response.headers[REQUEST_ID_HEADER]
+    accept_correlation_id = accept_response.headers[CORRELATION_ID_HEADER]
+
+    audit_response = client.get(
+        f"/api/v1/tenants/{tenant_id}/audit-logs",
+        headers=owner_headers,
+        params={
+            "resource_type": "invitation",
+            "resource_id": str(invitation_id),
+        },
+    )
+
+    assert audit_response.status_code == 200
+
+    body = audit_response.json()
+    items = body["items"]
+
+    assert body["next_cursor"] is None
+    assert len(items) == 2
+    assert [item["action"] for item in items] == [
+        "invitation.accepted",
+        "invitation.created",
+    ]
+    assert (
+        items[0]["resource"]
+        == items[1]["resource"]
+        == {
+            "type": "invitation",
+            "id": str(invitation_id),
+        }
+    )
+
+    accepted = items[0]
+    created = items[1]
+
+    assert accepted["actor"] == {
+        "type": "system",
+        "user_id": None,
+        "role": None,
+    }
+    assert accepted["source"] == "http"
+    assert accepted["request_id"] == accept_request_id
+    assert accepted["correlation_id"] == accept_correlation_id
+    assert accepted["metadata"] == {
+        "accepted_user_id": accepted_user_id,
+        "accepted_role": TenantRole.STAFF.value,
+    }
+    assert_public_audit_item(accepted)
+
+    assert created["actor"] == {
+        "type": "user",
+        "user_id": str(owner.id),
+        "role": TenantRole.OWNER.value,
+    }
+    assert created["source"] == "http"
+    assert created["request_id"]
+    assert created["correlation_id"]
+    assert created["metadata"] == {
+        "invited_role": TenantRole.STAFF.value,
+    }
+    assert_public_audit_item(created)
+    assert token not in audit_response.text

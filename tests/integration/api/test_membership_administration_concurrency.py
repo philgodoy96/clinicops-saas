@@ -9,6 +9,10 @@ from httpx2 import ASGITransport, AsyncClient, Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
+)
 from clinicops.audit.models import AuditLogEntry
 from clinicops.authentication.models import AuthSession
 from clinicops.db.session import get_engine
@@ -499,3 +503,73 @@ def test_removal_and_ownership_transfer_preserve_owner_invariant(
             TenantRole.OWNER,
             MembershipStatus.ACTIVE,
         )
+
+
+def test_membership_role_change_appears_in_audit_timeline(
+    client: TestClient,
+    membership_concurrency_data: (MembershipAdministrationConcurrencyData),
+) -> None:
+    scenario = membership_concurrency_data.create_scenario()
+    owner_headers = login_headers(client, scenario.owner)
+
+    change_response = client.patch(
+        (f"/api/v1/tenants/{scenario.tenant_id}/memberships/{scenario.staff_membership_id}/role"),
+        headers=owner_headers,
+        json={"role": "admin"},
+    )
+
+    assert change_response.status_code == 200
+
+    request_id = change_response.headers[REQUEST_ID_HEADER]
+    correlation_id = change_response.headers[CORRELATION_ID_HEADER]
+
+    audit_response = client.get(
+        f"/api/v1/tenants/{scenario.tenant_id}/audit-logs",
+        headers=owner_headers,
+        params={
+            "action": "membership.role_changed",
+            "resource_type": "membership",
+            "resource_id": str(scenario.staff_membership_id),
+        },
+    )
+
+    assert audit_response.status_code == 200
+
+    body = audit_response.json()
+
+    assert body["next_cursor"] is None
+    assert len(body["items"]) == 1
+
+    item = body["items"][0]
+
+    assert item["action"] == "membership.role_changed"
+    assert item["resource"] == {
+        "type": "membership",
+        "id": str(scenario.staff_membership_id),
+    }
+    assert item["actor"] == {
+        "type": "user",
+        "user_id": str(scenario.owner.id),
+        "role": TenantRole.OWNER.value,
+    }
+    assert item["source"] == "http"
+    assert item["request_id"] == request_id
+    assert item["correlation_id"] == correlation_id
+    assert item["metadata"] == {
+        "target_user_id": str(scenario.staff.id),
+        "previous_role": TenantRole.STAFF.value,
+        "new_role": TenantRole.ADMIN.value,
+    }
+    assert "idempotency_key" not in item
+    assert "idempotency_key" not in body
+
+    metadata = item["metadata"]
+    assert isinstance(metadata, dict)
+    for forbidden in (
+        "token",
+        "password",
+        "password_hash",
+        "provider_customer_id",
+        "provider_subscription_id",
+    ):
+        assert forbidden not in metadata

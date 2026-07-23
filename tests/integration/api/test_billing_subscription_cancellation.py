@@ -9,6 +9,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
+)
+from clinicops.api.v1.audit_logs import (
+    get_audit_log_tenant_context,
+)
 from clinicops.api.v1.billing.dependencies import (
     get_billing_manage_tenant_context,
 )
@@ -218,6 +225,29 @@ def _client(
         application.dependency_overrides.clear()
 
 
+@contextmanager
+def _audit_read_client(
+    fixture: ApiCancellationFixture,
+) -> Iterator[TestClient]:
+    application = create_app()
+    application.dependency_overrides[get_audit_log_tenant_context] = lambda: (
+        AuthorizedTenantContext(
+            user_id=fixture.audit_user_id,
+            session_id=uuid4(),
+            tenant_id=fixture.tenant_id,
+            membership_id=uuid4(),
+            role=TenantRole.OWNER,
+            granted_permission=TenantPermission.AUDIT_LOG_READ,
+        )
+    )
+
+    try:
+        with TestClient(application) as client:
+            yield client
+    finally:
+        application.dependency_overrides.clear()
+
+
 def _load_subscription(
     tenant_id: UUID,
 ) -> Subscription:
@@ -368,3 +398,62 @@ def test_cancellation_api_is_scoped_to_path_tenant() -> None:
         assert len(_load_operations(untouched.tenant_id)) == 0
     finally:
         _cleanup_fixture(selected, untouched)
+
+
+def test_cancellation_is_readable_through_audit_api() -> None:
+    fixture = _persist_subscription()
+
+    try:
+        with _client(fixture) as client:
+            response = client.post(
+                (f"/api/v1/tenants/{fixture.tenant_id}/billing/subscription/cancellation"),
+                headers={
+                    "Idempotency-Key": ("audit-api-cancellation"),
+                },
+            )
+
+        assert response.status_code == 200
+
+        request_id = response.headers[REQUEST_ID_HEADER]
+        correlation_id = response.headers[CORRELATION_ID_HEADER]
+
+        with _audit_read_client(fixture) as client:
+            audit_response = client.get(f"/api/v1/tenants/{fixture.tenant_id}/audit-logs")
+
+        assert audit_response.status_code == 200
+
+        body = audit_response.json()
+
+        assert body["next_cursor"] is None
+        assert len(body["items"]) == 1
+
+        item = body["items"][0]
+
+        assert item["action"] == ("billing.subscription.cancelled")
+        assert item["resource"] == {
+            "type": "subscription",
+            "id": str(fixture.subscription_id),
+        }
+        assert item["actor"] == {
+            "type": "user",
+            "user_id": str(fixture.audit_user_id),
+            "role": TenantRole.OWNER.value,
+        }
+        assert item["source"] == "http"
+        assert item["request_id"] == request_id
+        assert item["correlation_id"] == correlation_id
+        assert item["metadata"] == {
+            "previous_status": SubscriptionStatus.ACTIVE.value,
+            "new_status": SubscriptionStatus.CANCELED.value,
+        }
+        assert "idempotency_key" not in item
+        assert "idempotency_key" not in body
+        assert "provider_subscription_id" not in item["metadata"]
+        assert "provider_customer_id" not in item["metadata"]
+        assert "raw_payload" not in item["metadata"]
+
+        subscription = _load_subscription(fixture.tenant_id)
+        assert subscription.provider_subscription_id is not None
+        assert subscription.provider_subscription_id not in (audit_response.text)
+    finally:
+        _cleanup_fixture(fixture)

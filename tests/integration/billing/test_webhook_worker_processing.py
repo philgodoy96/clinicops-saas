@@ -16,11 +16,21 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from clinicops.api.v1.audit_logs import (
+    get_audit_log_tenant_context,
+)
+from clinicops.api.v1.billing.dependencies import (
+    get_enqueue_billing_webhook_processing_job_service,
+)
 from clinicops.api.v1.billing.webhooks import get_billing_webhook_clock
 from clinicops.audit.actions import AuditAction, AuditResourceType
 from clinicops.audit.context import AuditRecordingContext
 from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.audit.models import AuditLogEntry
+from clinicops.authorization.permissions import TenantPermission
+from clinicops.authorization.services.require_permission import (
+    AuthorizedTenantContext,
+)
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -43,6 +53,9 @@ from clinicops.billing.models import (
     Subscription,
 )
 from clinicops.billing.providers.fake import FakePaymentProvider
+from clinicops.billing.webhooks.enqueue_processing_job import (
+    EnqueueBillingWebhookProcessingJobService,
+)
 from clinicops.billing.webhooks.process import (
     ProcessBillingWebhookEventCommand,
     ProcessBillingWebhookEventService,
@@ -50,7 +63,10 @@ from clinicops.billing.webhooks.process import (
 from clinicops.billing.webhooks.signatures import sign_billing_webhook_payload
 from clinicops.core.config import Environment, Settings
 from clinicops.db.session import get_engine
-from clinicops.jobs.contracts import EnqueueBackgroundJobCommand
+from clinicops.jobs.contracts import (
+    EnqueueBackgroundJobCommand,
+    EnqueuedBackgroundJob,
+)
 from clinicops.jobs.enums import BackgroundJobStatus
 from clinicops.jobs.models import BackgroundJob
 from clinicops.jobs.repositories.background_job_repository import (
@@ -62,12 +78,13 @@ from clinicops.jobs.runtime.worker import (
     BackgroundWorker,
     SqlAlchemyBackgroundJobRuntimeStore,
     WorkerIterationOutcome,
+    WorkerIterationResult,
 )
 from clinicops.jobs.services.enqueue_background_job import (
     EnqueueBackgroundJobService,
 )
 from clinicops.main import create_app
-from clinicops.tenancy.models import Tenant
+from clinicops.tenancy.models import Tenant, TenantRole
 from tests.conftest import IsolatedSettings
 
 SECRET = "integration-billing-webhook-worker-secret"
@@ -148,17 +165,99 @@ def _settings() -> Settings:
     )
 
 
+def _enqueue_sealed_background_job(
+    session: Session,
+    command: EnqueueBackgroundJobCommand,
+) -> EnqueuedBackgroundJob:
+    """Enqueue webhook jobs already sealed against shared workers."""
+
+    database_time = session.scalar(select(func.now()))
+    assert database_time is not None
+
+    return EnqueueBackgroundJobService(BackgroundJobRepository(session)).execute(
+        EnqueueBackgroundJobCommand(
+            job_type=command.job_type,
+            payload_version=command.payload_version,
+            payload=command.payload,
+            correlation_id=command.correlation_id,
+            idempotency_key=command.idempotency_key,
+            origin_request_id=command.origin_request_id,
+            priority=_TEST_JOB_PRIORITY,
+            available_at=database_time + timedelta(hours=1),
+            max_attempts=command.max_attempts,
+        )
+    )
+
+
 @contextmanager
 def _client() -> Iterator[TestClient]:
     application = create_app(_settings())
     application.state.payment_provider = FakePaymentProvider()
     application.dependency_overrides[get_billing_webhook_clock] = lambda: FixedClock()
+    application.dependency_overrides[get_enqueue_billing_webhook_processing_job_service] = lambda: (
+        EnqueueBillingWebhookProcessingJobService(
+            enqueue_background_job=_enqueue_sealed_background_job,
+        )
+    )
 
     try:
         with TestClient(application) as client:
             yield client
     finally:
         application.dependency_overrides.clear()
+
+
+@contextmanager
+def _audit_read_client(
+    tenant_id: UUID,
+) -> Iterator[TestClient]:
+    application = create_app(_settings())
+    application.dependency_overrides[get_audit_log_tenant_context] = lambda: (
+        AuthorizedTenantContext(
+            user_id=uuid4(),
+            session_id=uuid4(),
+            tenant_id=tenant_id,
+            membership_id=uuid4(),
+            role=TenantRole.OWNER,
+            granted_permission=TenantPermission.AUDIT_LOG_READ,
+        )
+    )
+
+    try:
+        with TestClient(
+            application,
+            raise_server_exceptions=False,
+        ) as client:
+            yield client
+    finally:
+        application.dependency_overrides.clear()
+
+
+def _read_audit_items(
+    tenant_id: UUID,
+    *,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+) -> list[dict[str, object]]:
+    params: dict[str, str | int] = {"limit": 50}
+    if action is not None:
+        params["action"] = action
+    if resource_type is not None:
+        params["resource_type"] = resource_type
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+
+    with _audit_read_client(tenant_id) as client:
+        response = client.get(
+            f"/api/v1/tenants/{tenant_id}/audit-logs",
+            params=params,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "idempotency_key" not in body
+    return list(body["items"])
 
 
 def _signature(raw_body: bytes) -> str:
@@ -423,15 +522,105 @@ def _load_audit_entry(
         return entry
 
 
-def _prioritize_job(job_id: UUID) -> None:
+def _clear_competing_claimable_jobs(*owned_job_ids: UUID) -> None:
+    owned_ids = set(owned_job_ids)
+
+    with Session(get_engine()) as session:
+        statement = delete(BackgroundJob).where(
+            BackgroundJob.status.in_(
+                (
+                    BackgroundJobStatus.QUEUED,
+                    BackgroundJobStatus.RETRY_SCHEDULED,
+                )
+            ),
+            BackgroundJob.available_at <= func.now(),
+            (BackgroundJob.processing_attempt_count < BackgroundJob.max_attempts),
+        )
+
+        if owned_ids:
+            statement = statement.where(BackgroundJob.id.not_in(owned_ids))
+
+        session.execute(statement)
+        session.commit()
+
+
+def _seal_job(job_id: UUID) -> None:
+    """Keep an ingested job non-claimable until the test opens its window.
+
+    Webhook ingestion commits a claimable QUEUED row. A shared worker may claim
+    it before the test takes ownership, so PROCESSING rows are reclaimed under
+    test control and sealed into the future. That preserves the no-sleep
+    reclaim pattern without leaving a globally claimable window.
+    """
+
     with Session(get_engine()) as session:
         job = session.get(BackgroundJob, job_id)
         assert job is not None
+
+        if job.status is BackgroundJobStatus.SUCCEEDED:
+            raise AssertionError(
+                f"Owned webhook job {job_id} was already completed before the test sealed it."
+            )
+
+        if job.status is BackgroundJobStatus.DEAD_LETTERED:
+            raise AssertionError(
+                f"Owned webhook job {job_id} was dead-lettered before the test sealed it."
+            )
+
+        database_time = session.scalar(select(func.now()))
+        assert database_time is not None
+
+        job.status = BackgroundJobStatus.QUEUED
+        job.priority = _TEST_JOB_PRIORITY
+        job.available_at = database_time + timedelta(hours=1)
+        job.processing_attempt_count = 0
+        job.worker_id = None
+        job.claim_token = None
+        job.claimed_at = None
+        job.lease_expires_at = None
+        job.completed_at = None
+        job.last_failed_at = None
+        job.last_error_code = None
+        job.last_error_message = None
+        session.commit()
+
+
+def _open_claim_window(job_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        job = session.get(BackgroundJob, job_id)
+        assert job is not None
+        assert job.status in {
+            BackgroundJobStatus.QUEUED,
+            BackgroundJobStatus.RETRY_SCHEDULED,
+        }
+
         database_time = session.scalar(select(func.now()))
         assert database_time is not None
         job.priority = _TEST_JOB_PRIORITY
         job.available_at = database_time - timedelta(hours=1)
         session.commit()
+
+
+def _prepare_owned_job_for_claim(job_id: UUID) -> None:
+    """Clear competitors, then open the owned claim window."""
+
+    _clear_competing_claimable_jobs(job_id)
+    _open_claim_window(job_id)
+
+
+def _run_owned_job(
+    *,
+    engine: Engine,
+    job_id: UUID,
+    process_webhook_event: ClaimVisibilityProbe,
+) -> WorkerIterationResult:
+    worker = _build_worker(
+        engine=engine,
+        process_webhook_event=process_webhook_event,
+        worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
+    )
+    _prepare_owned_job_for_claim(job_id)
+    return worker.run_once()
 
 
 def _retry_policy() -> BackgroundJobRetryPolicy:
@@ -480,7 +669,9 @@ def _enqueue_replay_job(
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
                 priority=_TEST_JOB_PRIORITY,
-                available_at=database_time - timedelta(hours=1),
+                # Keep the replay row non-claimable until _prepare_owned_job_for_claim
+                # opens the window immediately before worker.run_once().
+                available_at=database_time + timedelta(hours=1),
             )
         )
         session.commit()
@@ -550,6 +741,8 @@ def test_authenticated_webhook_is_processed_by_background_worker() -> None:
         resources.job_idempotency_keys.append(idempotency_key)
         job = _load_job_by_idempotency_key(idempotency_key)
         resources.job_ids.append(job.id)
+        _seal_job(job.id)
+        job = _load_job(job.id)
 
         assert event.status is BillingWebhookEventStatus.RECEIVED
         assert event.processing_attempt_count == 0
@@ -568,15 +761,12 @@ def test_authenticated_webhook_is_processed_by_background_worker() -> None:
         assert job.worker_id is None
         assert job.claim_token is None
 
-        _prioritize_job(job.id)
-
         probe = ClaimVisibilityProbe(job_id=job.id, engine=engine)
-        worker = _build_worker(
+        result = _run_owned_job(
             engine=engine,
+            job_id=job.id,
             process_webhook_event=probe,
-            worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
         )
-        result = worker.run_once()
 
         assert result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert result.job_id == job.id
@@ -644,6 +834,34 @@ def test_authenticated_webhook_is_processed_by_background_worker() -> None:
             )
             == 1
         )
+
+        audit_items = _read_audit_items(
+            prerequisites.tenant_id,
+            action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            resource_type=AuditResourceType.BILLING_WEBHOOK_EVENT.value,
+            resource_id=str(event.id),
+        )
+
+        assert len(audit_items) == 1
+        api_item = audit_items[0]
+        assert api_item["action"] == (AuditAction.BILLING_WEBHOOK_PROCESSED.value)
+        assert api_item["actor"] == {
+            "type": "system",
+            "user_id": None,
+            "role": None,
+        }
+        assert api_item["source"] == "worker"
+        assert api_item["resource"] == {
+            "type": (AuditResourceType.BILLING_WEBHOOK_EVENT.value),
+            "id": str(event.id),
+        }
+        assert api_item["metadata"] == {
+            "event_type": (BillingWebhookEventType.SUBSCRIPTION_RENEWED.value),
+            "processing_outcome": "processed",
+        }
+        assert api_item["correlation_id"] == correlation_id
+        assert api_item["request_id"] == job.origin_request_id
+        assert "idempotency_key" not in api_item
     finally:
         _cleanup(resources)
 
@@ -690,11 +908,10 @@ def test_duplicate_webhook_delivery_reuses_event_and_processing_job() -> None:
 
         job = _load_job_by_idempotency_key(idempotency_key)
         resources.job_ids.append(job.id)
+        _seal_job(job.id)
 
         assert job.payload == {"webhook_event_id": str(event.id)}
         assert _job_count_for_webhook_event_id(event.id) == 1
-
-        _prioritize_job(job.id)
 
         probe = ClaimVisibilityProbe(job_id=job.id, engine=engine)
         worker = _build_worker(
@@ -702,6 +919,7 @@ def test_duplicate_webhook_delivery_reuses_event_and_processing_job() -> None:
             process_webhook_event=probe,
             worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
         )
+        _prepare_owned_job_for_claim(job.id)
         first_result = worker.run_once()
 
         assert first_result.outcome is WorkerIterationOutcome.SUCCEEDED
@@ -755,16 +973,14 @@ def test_replayed_billing_event_job_remains_domain_safe() -> None:
         resources.job_idempotency_keys.append(idempotency_key)
         job = _load_job_by_idempotency_key(idempotency_key)
         resources.job_ids.append(job.id)
-
-        _prioritize_job(job.id)
+        _seal_job(job.id)
 
         probe = ClaimVisibilityProbe(job_id=job.id, engine=engine)
-        worker = _build_worker(
+        first_result = _run_owned_job(
             engine=engine,
+            job_id=job.id,
             process_webhook_event=probe,
-            worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
         )
-        first_result = worker.run_once()
 
         assert first_result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert first_result.job_id == job.id
@@ -796,12 +1012,11 @@ def test_replayed_billing_event_job_remains_domain_safe() -> None:
         resources.job_ids.append(replay_job_id)
 
         replay_probe = ClaimVisibilityProbe(job_id=replay_job_id, engine=engine)
-        replay_worker = _build_worker(
+        replay_result = _run_owned_job(
             engine=engine,
+            job_id=replay_job_id,
             process_webhook_event=replay_probe,
-            worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
         )
-        replay_result = replay_worker.run_once()
 
         assert replay_result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert replay_result.job_id == replay_job_id
@@ -845,5 +1060,20 @@ def test_replayed_billing_event_job_remains_domain_safe() -> None:
             )
             == 1
         )
+
+        audit_items = _read_audit_items(
+            prerequisites.tenant_id,
+            action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            resource_type=AuditResourceType.BILLING_WEBHOOK_EVENT.value,
+            resource_id=str(event.id),
+        )
+
+        assert len(audit_items) == 1
+        assert audit_items[0]["action"] == (AuditAction.BILLING_WEBHOOK_PROCESSED.value)
+        assert audit_items[0]["resource"] == {
+            "type": (AuditResourceType.BILLING_WEBHOOK_EVENT.value),
+            "id": str(event.id),
+        }
+        assert "idempotency_key" not in audit_items[0]
     finally:
         _cleanup(resources)

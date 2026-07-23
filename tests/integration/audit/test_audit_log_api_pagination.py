@@ -296,3 +296,120 @@ def test_api_applies_action_and_resource_filters() -> None:
         assert body["next_cursor"] is None
     finally:
         _delete_committed_tenant_data(tenant_id)
+
+
+def test_api_paginates_mixed_domain_actions_without_duplicates() -> None:
+    tenant_id = _create_committed_tenant()
+    newest = datetime.now(UTC)
+    membership_id = uuid4()
+    invitation_id = uuid4()
+    webhook_event_id = uuid4()
+    entry_specs = [
+        (
+            membership_id,
+            newest,
+            "membership.role_changed",
+            "membership",
+            str(membership_id),
+        ),
+        (
+            invitation_id,
+            newest - timedelta(seconds=1),
+            "invitation.created",
+            "invitation",
+            str(invitation_id),
+        ),
+        (
+            webhook_event_id,
+            newest - timedelta(seconds=2),
+            "billing.webhook.processed",
+            "billing_webhook_event",
+            str(webhook_event_id),
+        ),
+        (
+            uuid4(),
+            newest - timedelta(seconds=3),
+            "membership.removed",
+            "membership",
+            str(uuid4()),
+        ),
+        (
+            uuid4(),
+            newest - timedelta(seconds=4),
+            "billing.subscription.cancelled",
+            "subscription",
+            str(uuid4()),
+        ),
+    ]
+
+    try:
+        _persist_entries(
+            *[
+                _entry(
+                    tenant_id=tenant_id,
+                    entry_id=entry_id,
+                    recorded_at=recorded_at,
+                    action=action,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                )
+                for (
+                    entry_id,
+                    recorded_at,
+                    action,
+                    resource_type,
+                    resource_id,
+                ) in entry_specs
+            ]
+        )
+
+        expected_ids = [str(entry_id) for entry_id, *_ in entry_specs]
+        collected_ids: list[str] = []
+        collected_actions: list[str] = []
+        collected_resource_types: list[str] = []
+        cursor: str | None = None
+
+        with _authorized_client(tenant_id) as client:
+            while True:
+                params: dict[str, str | int] = {"limit": 2}
+                if cursor is not None:
+                    params["cursor"] = cursor
+
+                response = client.get(
+                    (f"/api/v1/tenants/{tenant_id}/audit-logs"),
+                    params=params,
+                )
+
+                assert response.status_code == 200
+
+                page = response.json()
+                page_items = page["items"]
+
+                assert len(page_items) <= 2
+
+                for item in page_items:
+                    collected_ids.append(item["id"])
+                    collected_actions.append(item["action"])
+                    collected_resource_types.append(item["resource"]["type"])
+                    assert "idempotency_key" not in item
+
+                cursor = page["next_cursor"]
+
+                if cursor is None:
+                    break
+
+        assert collected_ids == expected_ids
+        assert len(collected_ids) == len(set(collected_ids))
+        assert set(collected_actions) >= {
+            "membership.role_changed",
+            "invitation.created",
+            "billing.webhook.processed",
+        }
+        assert set(collected_resource_types) >= {
+            "membership",
+            "invitation",
+            "billing_webhook_event",
+        }
+        assert cursor is None
+    finally:
+        _delete_committed_tenant_data(tenant_id)
