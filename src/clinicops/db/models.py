@@ -1,5 +1,6 @@
 from sqlalchemy import MetaData
 
+from clinicops.audit.models import AuditLogEntry
 from clinicops.authentication.models import (
     AuthSession,
     AuthSessionStatus,
@@ -27,6 +28,7 @@ from clinicops.tenancy.models import (
 metadata: MetaData = Base.metadata
 
 __all__ = [
+    "AuditLogEntry",
     "AuthSession",
     "AuthSessionStatus",
     "BackgroundJob",
