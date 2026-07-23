@@ -16,6 +16,12 @@ from clinicops.api.middleware.request_context import (
     REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
+from clinicops.audit.exceptions import (
+    AuditLogInvalidConfigurationError,
+)
+from clinicops.audit.policies import (
+    AuditLogAccessDeniedError,
+)
 from clinicops.authentication.exceptions import InvalidCredentialsError
 from clinicops.authorization.exceptions import (
     TenantNotFoundError,
@@ -62,6 +68,14 @@ def create_error_test_app() -> FastAPI:
     @application.get("/permission-denied")
     def raise_permission_denied() -> None:
         raise TenantPermissionDeniedError()
+
+    @application.get("/audit-log-invalid-configuration")
+    def raise_audit_log_invalid_configuration() -> None:
+        raise AuditLogInvalidConfigurationError("sensitive internal detail")
+
+    @application.get("/audit-log-access-denied")
+    def raise_audit_log_access_denied() -> None:
+        raise AuditLogAccessDeniedError()
 
     @application.get("/http-unauthorized")
     def raise_http_unauthorized() -> None:
@@ -189,6 +203,43 @@ def test_permission_denial_maps_to_forbidden(
     )
     assert body["title"] == "Operation forbidden"
     assert body["detail"] == ("The tenant operation is not permitted.")
+    assert_trace_identifiers(body, response)
+
+
+def test_audit_log_invalid_configuration_maps_to_bad_request(
+    error_client: TestClient,
+) -> None:
+    response = error_client.get("/audit-log-invalid-configuration")
+    body = response.json()
+
+    assert response.status_code == 400
+    assert_problem_content_type(response)
+    assert_problem_identity(
+        body,
+        status_code=400,
+        code="audit_log_invalid_configuration",
+    )
+    assert body["title"] == "Application request failed"
+    assert body["detail"] == ("The audit log request is invalid.")
+    assert "sensitive internal detail" not in response.text
+    assert_trace_identifiers(body, response)
+
+
+def test_audit_log_access_denied_maps_to_forbidden(
+    error_client: TestClient,
+) -> None:
+    response = error_client.get("/audit-log-access-denied")
+    body = response.json()
+
+    assert response.status_code == 403
+    assert_problem_content_type(response)
+    assert_problem_identity(
+        body,
+        status_code=403,
+        code="audit_log_access_denied",
+    )
+    assert body["title"] == "Operation forbidden"
+    assert body["detail"] == ("The current membership cannot read tenant audit logs.")
     assert_trace_identifiers(body, response)
 
 

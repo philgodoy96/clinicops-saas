@@ -13,6 +13,12 @@ from clinicops.api.middleware.request_context import (
     CORRELATION_ID_HEADER,
     REQUEST_ID_HEADER,
 )
+from clinicops.audit.exceptions import (
+    AuditLogInvalidConfigurationError,
+)
+from clinicops.audit.policies import (
+    AuditLogAccessDeniedError,
+)
 from clinicops.authentication.exceptions import (
     AccessTokenExpiredError,
     AccessTokenInvalidError,
@@ -261,6 +267,10 @@ BILLING_CONFLICT_ERRORS = (
     ProviderTerminalError,
 )
 
+AUDIT_LOG_FORBIDDEN_ERRORS = (AuditLogAccessDeniedError,)
+
+AUDIT_LOG_BAD_REQUEST_ERRORS = (AuditLogInvalidConfigurationError,)
+
 
 def _problem_type(code: str) -> str:
     """Return the stable problem type URI for one public error code."""
@@ -488,6 +498,20 @@ def _application_problem(
         return (
             status.HTTP_409_CONFLICT,
             "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, AUDIT_LOG_FORBIDDEN_ERRORS):
+        return (
+            status.HTTP_403_FORBIDDEN,
+            "Operation forbidden",
+            None,
+        )
+
+    if isinstance(exception, AUDIT_LOG_BAD_REQUEST_ERRORS):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
             None,
         )
 
