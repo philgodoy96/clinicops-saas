@@ -7,6 +7,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -43,7 +45,8 @@ from clinicops.billing.services.schedule_plan_change import (
     ScheduleBillingPlanChangeService,
 )
 from clinicops.db.session import get_engine
-from clinicops.tenancy.models import Tenant
+from clinicops.identity.models import User, UserStatus
+from clinicops.tenancy.models import Tenant, TenantRole
 
 PERIOD_START = datetime(
     2026,
@@ -66,9 +69,42 @@ class FixedClock:
         return FIXED_NOW
 
 
+def _audit_context(*, user_id: UUID) -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=TenantRole.OWNER.value,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
+
+
+def _create_user(prefix: str) -> User:
+    return User(
+        email=f"{prefix}-{uuid4()}@example.com",
+        status=UserStatus.ACTIVE,
+    )
+
+
+def _persist_user(user: User) -> UUID:
+    with Session(get_engine()) as session:
+        session.add(user)
+        session.flush()
+        user_id = user.id
+        session.commit()
+
+    return user_id
+
+
+def _delete_user(user_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        session.execute(delete(User).where(User.id == user_id))
+        session.commit()
+
+
 @dataclass(frozen=True, slots=True)
 class ConcurrentPlanChangeFixture:
     tenant_id: UUID
+    audit_user_id: UUID
     provider: FakePaymentProvider
 
 
@@ -76,6 +112,7 @@ def _persist_fixture() -> ConcurrentPlanChangeFixture:
     provider = FakePaymentProvider()
     tenant_id = uuid4()
     billing_customer_id = uuid4()
+    audit_user_id = _persist_user(_create_user("plan-change-concurrency-audit"))
 
     provider_customer = provider.create_customer(
         CreateCustomerRequest(provider_operation_key=(build_provider_operation_key(uuid4())))
@@ -131,12 +168,14 @@ def _persist_fixture() -> ConcurrentPlanChangeFixture:
 
     return ConcurrentPlanChangeFixture(
         tenant_id=tenant_id,
+        audit_user_id=audit_user_id,
         provider=provider,
     )
 
 
 def _cleanup_tenant(tenant_id: UUID) -> None:
     with Session(get_engine()) as session:
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
         session.execute(delete(ProviderOperation).where(ProviderOperation.tenant_id == tenant_id))
         session.execute(delete(Subscription).where(Subscription.tenant_id == tenant_id))
         session.execute(delete(BillingCustomer).where(BillingCustomer.tenant_id == tenant_id))
@@ -149,6 +188,7 @@ def _execute_concurrently(
     service: ScheduleBillingPlanChangeService,
     barrier: Barrier,
     tenant_id: UUID,
+    audit_user_id: UUID,
     idempotency_key: str,
     target_price_code: str,
 ) -> str:
@@ -162,6 +202,7 @@ def _execute_concurrently(
                     tenant_id=tenant_id,
                     target_price_code=target_price_code,
                     idempotency_key=idempotency_key,
+                    audit_context=_audit_context(user_id=audit_user_id),
                 ),
             )
         except ProviderOperationInProgressError:
@@ -173,7 +214,8 @@ def _execute_concurrently(
         except ProviderTerminalError:
             return "provider_terminal"
 
-    return "replayed" if result.replayed else "scheduled"
+        session.commit()
+        return "replayed" if result.replayed else "scheduled"
 
 
 def _load_state(
@@ -210,6 +252,7 @@ def test_concurrent_same_key_schedules_one_logical_change() -> None:
                     service=service,
                     barrier=barrier,
                     tenant_id=fixture.tenant_id,
+                    audit_user_id=fixture.audit_user_id,
                     idempotency_key=("same-concurrent-plan-change"),
                     target_price_code=("professional_monthly"),
                 )
@@ -236,6 +279,7 @@ def test_concurrent_same_key_schedules_one_logical_change() -> None:
         assert operations[0].attempt_count == 1
     finally:
         _cleanup_tenant(fixture.tenant_id)
+        _delete_user(fixture.audit_user_id)
 
 
 def test_concurrent_different_keys_preserve_one_pending_target() -> None:
@@ -265,6 +309,7 @@ def test_concurrent_different_keys_preserve_one_pending_target() -> None:
                     service=service,
                     barrier=barrier,
                     tenant_id=fixture.tenant_id,
+                    audit_user_id=fixture.audit_user_id,
                     idempotency_key=idempotency_key,
                     target_price_code=target_price_code,
                 )
@@ -299,6 +344,7 @@ def test_concurrent_different_keys_preserve_one_pending_target() -> None:
         )
     finally:
         _cleanup_tenant(fixture.tenant_id)
+        _delete_user(fixture.audit_user_id)
 
 
 def test_concurrent_same_key_with_different_targets_conflicts() -> None:
@@ -322,6 +368,7 @@ def test_concurrent_same_key_with_different_targets_conflicts() -> None:
                     service=service,
                     barrier=barrier,
                     tenant_id=fixture.tenant_id,
+                    audit_user_id=fixture.audit_user_id,
                     idempotency_key=("same-key-different-target"),
                     target_price_code=target,
                 )
@@ -338,3 +385,4 @@ def test_concurrent_same_key_with_different_targets_conflicts() -> None:
         assert operations[0].status is ProviderOperationStatus.SUCCEEDED
     finally:
         _cleanup_tenant(fixture.tenant_id)
+        _delete_user(fixture.audit_user_id)

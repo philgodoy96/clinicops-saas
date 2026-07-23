@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -5,6 +6,13 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import (
+    RecordAuditLogCommand,
+    RecordedAuditLog,
+)
+from clinicops.audit.enums import AuditSource
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -45,6 +53,45 @@ from clinicops.billing.services.schedule_plan_change import (
     ScheduleBillingPlanChangeService,
 )
 from clinicops.core.clock import Clock
+from clinicops.tenancy.models import TenantRole
+
+ACTOR_USER_ID = UUID("11111111-1111-1111-1111-111111111111")
+REQUEST_ID = "billing-plan-change-request-id"
+CORRELATION_ID = "billing-plan-change-correlation-id"
+
+
+class SimulatedAuditRecordingError(RuntimeError):
+    """Represent a deterministic audit recording failure."""
+
+
+class RecordingAuditRecorder:
+    def __init__(self) -> None:
+        self.sessions: list[Session] = []
+        self.commands: list[RecordAuditLogCommand] = []
+
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        self.sessions.append(session)
+        self.commands.append(command)
+
+        return RecordedAuditLog(
+            audit_log_id=uuid4(),
+            created=True,
+            recorded_at=FIXED_NOW,
+        )
+
+
+class FailingAuditRecorder:
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        raise SimulatedAuditRecordingError("audit recording failed")
+
 
 FIXED_NOW = datetime(
     2026,
@@ -253,20 +300,32 @@ def _subscription(
     return subscription
 
 
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=ACTOR_USER_ID,
+        role=TenantRole.OWNER.value,
+        request_id=REQUEST_ID,
+        correlation_id=CORRELATION_ID,
+    )
+
+
 def _build_service(
     *,
     session: FakeSession,
     subscription: Subscription | None = None,
     provider: RecordingPlanChangeProvider | None = None,
+    audit_recorder: RecordingAuditRecorder | FailingAuditRecorder | None = None,
 ) -> tuple[
     ScheduleBillingPlanChangeService,
     InMemorySubscriptionRepository,
     InMemoryProviderOperationRepository,
     RecordingPlanChangeProvider,
+    RecordingAuditRecorder | FailingAuditRecorder,
 ]:
     subscription_repository = InMemorySubscriptionRepository(subscription)
     operation_repository = InMemoryProviderOperationRepository()
     resolved_provider = provider or RecordingPlanChangeProvider(session)
+    resolved_audit_recorder = audit_recorder or RecordingAuditRecorder()
     service = ScheduleBillingPlanChangeService(
         cast(PaymentProvider, resolved_provider),
         subscription_repository=cast(
@@ -278,6 +337,7 @@ def _build_service(
             operation_repository,
         ),
         clock=cast(Clock, FixedClock()),
+        audit_recorder=resolved_audit_recorder,
     )
 
     return (
@@ -285,6 +345,7 @@ def _build_service(
         subscription_repository,
         operation_repository,
         resolved_provider,
+        resolved_audit_recorder,
     )
 
 
@@ -292,22 +353,46 @@ def _command(
     *,
     target_price_code: str = "professional_monthly",
     idempotency_key: str = "plan-change-request-1",
+    audit_context: AuditRecordingContext | None = None,
 ) -> ScheduleBillingPlanChangeCommand:
     return ScheduleBillingPlanChangeCommand(
         tenant_id=TENANT_ID,
         target_price_code=target_price_code,
         idempotency_key=idempotency_key,
+        audit_context=audit_context or _audit_context(),
     )
+
+
+def _assert_safe_plan_change_metadata(metadata: Mapping[str, object]) -> None:
+    assert metadata == {
+        "previous_plan": BillingPlan.STARTER.value,
+        "new_plan": BillingPlan.PROFESSIONAL.value,
+    }
+    forbidden = {
+        "provider_subscription_id",
+        "provider_reference",
+        "request_payload",
+        "result_payload",
+        "api_key",
+        "secret",
+        "authorization",
+        "idempotency_key",
+        "target_price_code",
+        "price_code",
+    }
+    assert forbidden.isdisjoint(metadata)
 
 
 def test_service_schedules_plan_change_across_commits() -> None:
     session = FakeSession()
     subscription = _subscription()
+    command = _command()
     (
         service,
         subscription_repository,
         operation_repository,
         provider,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=subscription,
@@ -315,10 +400,10 @@ def test_service_schedules_plan_change_across_commits() -> None:
 
     result = service.execute(
         cast(Session, session),
-        _command(),
+        command,
     )
 
-    assert session.commit_count == 2
+    assert session.commit_count == 1
     assert provider.calls == 1
     assert provider.requests[0].effective_at == PERIOD_END
     assert subscription.price_code == "starter_monthly"
@@ -336,6 +421,26 @@ def test_service_schedules_plan_change_across_commits() -> None:
     assert operation.attempt_count == 1
     assert operation.subscription_id == subscription.id
 
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert recorder.sessions == [cast(Session, session)]
+    assert len(recorder.commands) == 1
+    audit_command = recorder.commands[0]
+    assert audit_command.action == AuditAction.BILLING_SUBSCRIPTION_PLAN_CHANGED.value
+    assert audit_command.resource_type == AuditResourceType.SUBSCRIPTION.value
+    assert audit_command.resource_id == str(subscription.id)
+    assert audit_command.tenant_id == TENANT_ID
+    assert audit_command.actor.user_id == ACTOR_USER_ID
+    assert audit_command.actor.role == TenantRole.OWNER.value
+    assert audit_command.source is AuditSource.HTTP
+    assert audit_command.request_id == REQUEST_ID
+    assert audit_command.correlation_id == CORRELATION_ID
+    assert audit_command.metadata_version == 1
+    assert (
+        audit_command.idempotency_key
+        == f"subscription-plan-changed:{subscription.id}:{command.idempotency_key}"
+    )
+    _assert_safe_plan_change_metadata(audit_command.metadata)
+
 
 def test_same_successful_key_replays_without_provider_call() -> None:
     session = FakeSession()
@@ -344,6 +449,7 @@ def test_same_successful_key_replays_without_provider_call() -> None:
         _,
         _,
         provider,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=_subscription(),
@@ -364,6 +470,8 @@ def test_same_successful_key_replays_without_provider_call() -> None:
     assert first.id == replayed.id
     assert replayed.replayed is True
     assert provider.calls == 1
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert len(recorder.commands) == 1
 
 
 def test_same_key_with_different_target_is_rejected() -> None:
@@ -373,6 +481,7 @@ def test_same_key_with_different_target_is_rejected() -> None:
         _,
         _,
         provider,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=_subscription(),
@@ -393,6 +502,8 @@ def test_same_key_with_different_target_is_rejected() -> None:
         )
 
     assert provider.calls == 1
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert len(recorder.commands) == 1
 
 
 def test_new_key_is_rejected_when_plan_change_is_pending() -> None:
@@ -402,6 +513,7 @@ def test_new_key_is_rejected_when_plan_change_is_pending() -> None:
         _,
         _,
         provider,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=_subscription(),
@@ -422,6 +534,8 @@ def test_new_key_is_rejected_when_plan_change_is_pending() -> None:
         )
 
     assert provider.calls == 1
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert len(recorder.commands) == 1
 
 
 @pytest.mark.parametrize(
@@ -459,6 +573,7 @@ def test_business_conflicts_skip_provider(
         _,
         _,
         provider,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=subscription,
@@ -471,6 +586,8 @@ def test_business_conflicts_skip_provider(
         )
 
     assert provider.calls == 0
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert recorder.commands == []
 
 
 def test_retryable_failure_is_persisted_and_can_resume() -> None:
@@ -490,6 +607,7 @@ def test_retryable_failure_is_persisted_and_can_resume() -> None:
         subscription_repository,
         operation_repository,
         _,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=_subscription(),
@@ -509,6 +627,8 @@ def test_retryable_failure_is_persisted_and_can_resume() -> None:
     assert operation.completed_at is None
     assert subscription_repository.subscription is not None
     assert subscription_repository.subscription.pending_price_code is None
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert recorder.commands == []
 
     session.touch()
     recovered = service.execute(
@@ -521,6 +641,7 @@ def test_retryable_failure_is_persisted_and_can_resume() -> None:
     assert resumed_operation.attempt_count == 2
     assert resumed_operation.status is ProviderOperationStatus.SUCCEEDED
     assert recovered.pending_price_code == "professional_monthly"
+    assert len(recorder.commands) == 1
 
 
 def test_terminal_failure_is_persisted_and_not_retried() -> None:
@@ -540,6 +661,7 @@ def test_terminal_failure_is_persisted_and_not_retried() -> None:
         _,
         operation_repository,
         _,
+        recorder,
     ) = _build_service(
         session=session,
         subscription=_subscription(),
@@ -556,6 +678,8 @@ def test_terminal_failure_is_persisted_and_not_retried() -> None:
     operation = next(iter(operation_repository.operations.values()))
     assert operation.status is ProviderOperationStatus.FAILED_TERMINAL
     assert operation.completed_at == FIXED_NOW
+    assert isinstance(recorder, RecordingAuditRecorder)
+    assert recorder.commands == []
 
     session.touch()
 
@@ -566,3 +690,30 @@ def test_terminal_failure_is_persisted_and_not_retried() -> None:
         )
 
     assert provider.calls == 1
+    assert recorder.commands == []
+
+
+def test_audit_failure_propagates_without_final_commit() -> None:
+    session = FakeSession()
+    (
+        service,
+        _,
+        _,
+        provider,
+        recorder,
+    ) = _build_service(
+        session=session,
+        subscription=_subscription(),
+        audit_recorder=FailingAuditRecorder(),
+    )
+
+    with pytest.raises(SimulatedAuditRecordingError):
+        service.execute(
+            cast(Session, session),
+            _command(),
+        )
+
+    assert session.commit_count == 1
+    assert session.rollback_count == 1
+    assert provider.calls == 1
+    assert isinstance(recorder, FailingAuditRecorder)

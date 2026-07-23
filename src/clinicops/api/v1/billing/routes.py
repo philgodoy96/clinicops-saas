@@ -19,6 +19,10 @@ from clinicops.api.v1.billing.schemas import (
     CreateBillingSubscriptionRequest,
     ScheduleBillingPlanChangeRequest,
 )
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.authorization.services.require_permission import (
+    AuthorizedTenantContext,
+)
 from clinicops.billing.services.create_subscription import (
     CreateBillingSubscriptionCommand,
     CreatedBillingSubscription,
@@ -35,11 +39,36 @@ from clinicops.billing.services.schedule_plan_change import (
     ScheduleBillingPlanChangeCommand,
     ScheduledBillingPlanChange,
 )
+from clinicops.core.request_context import (
+    get_correlation_id,
+    get_request_id,
+)
 
 router = APIRouter(
     prefix="/tenants",
     tags=["billing"],
 )
+
+
+def _http_audit_context(
+    tenant_context: AuthorizedTenantContext,
+) -> AuditRecordingContext:
+    """Build audit attribution from trusted runtime request state."""
+
+    request_id = get_request_id()
+    correlation_id = get_correlation_id()
+
+    if request_id is None or correlation_id is None:
+        raise RuntimeError(
+            "Request context identifiers are required for audit recording.",
+        )
+
+    return AuditRecordingContext.http_user(
+        user_id=tenant_context.user_id,
+        role=tenant_context.role.value,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
 
 
 @router.get(
@@ -77,7 +106,7 @@ def create_billing_subscription(
     payload: CreateBillingSubscriptionRequest,
     response: Response,
     session: DatabaseSessionDependency,
-    _tenant_context: BillingManageTenantContextDependency,
+    tenant_context: BillingManageTenantContextDependency,
     idempotency_key: BillingIdempotencyKeyDependency,
     service: CreateBillingSubscriptionServiceDependency,
 ) -> BillingSubscriptionResponse:
@@ -89,8 +118,10 @@ def create_billing_subscription(
             tenant_id=tenant_id,
             price_code=payload.price_code,
             idempotency_key=idempotency_key,
+            audit_context=_http_audit_context(tenant_context),
         ),
     )
+    session.commit()
 
     response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED
 
@@ -107,7 +138,7 @@ def schedule_billing_plan_change(
     tenant_id: UUID,
     payload: ScheduleBillingPlanChangeRequest,
     session: DatabaseSessionDependency,
-    _tenant_context: BillingManageTenantContextDependency,
+    tenant_context: BillingManageTenantContextDependency,
     idempotency_key: BillingIdempotencyKeyDependency,
     service: ScheduleBillingPlanChangeServiceDependency,
 ) -> BillingSubscriptionResponse:
@@ -119,8 +150,10 @@ def schedule_billing_plan_change(
             tenant_id=tenant_id,
             target_price_code=payload.price_code,
             idempotency_key=idempotency_key,
+            audit_context=_http_audit_context(tenant_context),
         ),
     )
+    session.commit()
 
     return _to_response(result)
 
@@ -134,7 +167,7 @@ def schedule_billing_plan_change(
 def schedule_billing_subscription_cancellation(
     tenant_id: UUID,
     session: DatabaseSessionDependency,
-    _tenant_context: BillingManageTenantContextDependency,
+    tenant_context: BillingManageTenantContextDependency,
     idempotency_key: BillingIdempotencyKeyDependency,
     service: (ScheduleBillingSubscriptionCancellationServiceDependency),
 ) -> BillingSubscriptionResponse:
@@ -145,8 +178,10 @@ def schedule_billing_subscription_cancellation(
         ScheduleBillingSubscriptionCancellationCommand(
             tenant_id=tenant_id,
             idempotency_key=idempotency_key,
+            audit_context=_http_audit_context(tenant_context),
         ),
     )
+    session.commit()
 
     return _to_response(result)
 

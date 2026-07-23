@@ -4,6 +4,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.billing.catalog import get_price_definition
 from clinicops.billing.enums import (
     BillingInterval,
@@ -63,6 +67,7 @@ class CreateBillingSubscriptionCommand:
     tenant_id: UUID
     price_code: str
     idempotency_key: str
+    audit_context: AuditRecordingContext
 
     def __post_init__(self) -> None:
         normalized_price_code = self.price_code.strip()
@@ -220,6 +225,7 @@ class CreateBillingSubscriptionService:
         subscription_repository: (SubscriptionRepository | None) = None,
         provider_operation_repository: (ProviderOperationRepository | None) = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._payment_provider = payment_provider
         self._billing_customer_repository = (
@@ -238,6 +244,9 @@ class CreateBillingSubscriptionService:
             else ProviderOperationRepository()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -248,6 +257,8 @@ class CreateBillingSubscriptionService:
 
         This orchestrator intentionally owns multiple commits. Each provider
         call occurs only after the preceding database transaction commits.
+        The final local subscription mutation and audit entry are left for the
+        caller transaction owner to commit.
         """
 
         reservation = self._reserve_with_conflict_recovery(
@@ -256,7 +267,6 @@ class CreateBillingSubscriptionService:
         )
 
         if reservation.replayed_result is not None:
-            session.commit()
             return reservation.replayed_result
 
         session.commit()
@@ -654,14 +664,12 @@ class CreateBillingSubscriptionService:
             raise
 
         try:
-            created = self._apply_subscription_result(
+            return self._apply_subscription_result(
                 session=session,
                 command=command,
                 subscription_operation_id=(subscription_operation_id),
                 result=result,
             )
-            session.commit()
-            return created
         except BillingSubscriptionAlreadyExistsError as error:
             self._rollback_if_active(session)
             self._persist_application_failure(
@@ -743,6 +751,27 @@ class CreateBillingSubscriptionService:
         )
         self._provider_operation_repository.flush(
             session,
+        )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=subscription.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.BILLING_SUBSCRIPTION_CREATED.value,
+                resource_type=AuditResourceType.SUBSCRIPTION.value,
+                resource_id=str(subscription.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "plan": subscription.plan.value,
+                    "status": subscription.status.value,
+                },
+                idempotency_key=(f"subscription-created:{subscription.id}"),
+                request_id=audit_context.request_id,
+            ),
         )
 
         return self._to_result(
