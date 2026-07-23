@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.billing.jobs.constants import (
     BILLING_WEBHOOK_PROCESS_JOB_TYPE,
     BILLING_WEBHOOK_PROCESS_PAYLOAD_VERSION,
@@ -23,7 +24,7 @@ from clinicops.jobs.runtime.exceptions import (
 )
 
 type ProcessBillingWebhookEvent = Callable[
-    [UUID],
+    [UUID, AuditRecordingContext],
     None,
 ]
 
@@ -66,8 +67,15 @@ class ProcessBillingWebhookEventJobHandler:
             )
 
         payload = ProcessBillingWebhookEventJobPayload.from_json(job.payload)
+        audit_context = AuditRecordingContext.worker_system(
+            correlation_id=job.correlation_id,
+            request_id=job.origin_request_id,
+        )
 
-        self._process_webhook_event(payload.webhook_event_id)
+        self._process_webhook_event(
+            payload.webhook_event_id,
+            audit_context,
+        )
 
 
 class SqlAlchemyBillingWebhookEventProcessor:
@@ -85,6 +93,7 @@ class SqlAlchemyBillingWebhookEventProcessor:
     def __call__(
         self,
         webhook_event_id: UUID,
+        audit_context: AuditRecordingContext,
     ) -> None:
         with self._session_factory() as session:
             try:
@@ -92,6 +101,7 @@ class SqlAlchemyBillingWebhookEventProcessor:
                     session,
                     ProcessBillingWebhookEventCommand(
                         webhook_event_id=webhook_event_id,
+                        audit_context=audit_context,
                     ),
                 )
                 session.commit()

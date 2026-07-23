@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -223,7 +225,12 @@ def _process_concurrently(
         try:
             result = service.execute(
                 session,
-                ProcessBillingWebhookEventCommand(webhook_event_id=webhook_event_id),
+                ProcessBillingWebhookEventCommand(
+                    webhook_event_id=webhook_event_id,
+                    audit_context=AuditRecordingContext.worker_system(
+                        correlation_id=(f"concurrent-webhook-{webhook_event_id}"),
+                    ),
+                ),
             )
         except BillingWebhookEventProcessingConflictError:
             return (
@@ -268,6 +275,7 @@ def _cleanup(
 ) -> None:
     with Session(get_engine()) as session:
         session.execute(delete(BillingWebhookEvent).where(BillingWebhookEvent.id.in_(event_ids)))
+        session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == fixture.tenant_id))
         session.execute(delete(Subscription).where(Subscription.tenant_id == fixture.tenant_id))
         session.execute(
             delete(BillingCustomer).where(BillingCustomer.tenant_id == fixture.tenant_id)

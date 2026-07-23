@@ -7,6 +7,8 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.billing.enums import (
     BillingWebhookEventStatus,
     BillingWebhookEventType,
@@ -39,13 +41,18 @@ from clinicops.jobs.runtime.exceptions import (
 @dataclass
 class RecordingWebhookProcessor:
     processed_event_ids: list[UUID] = field(default_factory=list)
+    received_audit_contexts: list[AuditRecordingContext] = field(
+        default_factory=list,
+    )
     error: Exception | None = None
 
     def __call__(
         self,
         webhook_event_id: UUID,
+        audit_context: AuditRecordingContext,
     ) -> None:
         self.processed_event_ids.append(webhook_event_id)
+        self.received_audit_contexts.append(audit_context)
 
         if self.error is not None:
             raise self.error
@@ -129,8 +136,21 @@ def _claimed_job(
     job_type: str = (BILLING_WEBHOOK_PROCESS_JOB_TYPE),
     payload_version: int = 1,
     payload: JSONObject | None = None,
+    correlation_id: str | None = None,
+    origin_request_id: str | None = None,
+    include_origin_request_id: bool = True,
 ) -> ClaimedBackgroundJob:
     claimed_at = datetime.now(UTC)
+    resolved_correlation_id = (
+        correlation_id if correlation_id is not None else f"correlation-{uuid4()}"
+    )
+    resolved_origin_request_id: str | None
+    if not include_origin_request_id:
+        resolved_origin_request_id = None
+    elif origin_request_id is not None:
+        resolved_origin_request_id = origin_request_id
+    else:
+        resolved_origin_request_id = f"request-{uuid4()}"
 
     return ClaimedBackgroundJob(
         job_id=uuid4(),
@@ -149,8 +169,8 @@ def _claimed_job(
         claim_token=uuid4(),
         claimed_at=claimed_at,
         lease_expires_at=(claimed_at + timedelta(minutes=5)),
-        correlation_id=f"correlation-{uuid4()}",
-        origin_request_id=f"request-{uuid4()}",
+        correlation_id=resolved_correlation_id,
+        origin_request_id=resolved_origin_request_id,
     )
 
 
@@ -161,8 +181,10 @@ def test_handler_exposes_stable_registry_contract() -> None:
     assert handler.supported_payload_version == 1
 
 
-def test_handler_invokes_webhook_processor() -> None:
+def test_handler_invokes_webhook_processor_with_worker_audit_context() -> None:
     webhook_event_id = uuid4()
+    correlation_id = f"correlation-{uuid4()}"
+    origin_request_id = f"request-{uuid4()}"
     processor = RecordingWebhookProcessor()
     handler = ProcessBillingWebhookEventJobHandler(processor)
 
@@ -170,11 +192,45 @@ def test_handler_invokes_webhook_processor() -> None:
         _claimed_job(
             payload={
                 "webhook_event_id": str(webhook_event_id),
-            }
+            },
+            correlation_id=correlation_id,
+            origin_request_id=origin_request_id,
         )
     )
 
     assert processor.processed_event_ids == [webhook_event_id]
+    assert len(processor.received_audit_contexts) == 1
+    audit_context = processor.received_audit_contexts[0]
+    assert audit_context.actor.actor_type is AuditActorType.SYSTEM
+    assert audit_context.actor.user_id is None
+    assert audit_context.actor.role is None
+    assert audit_context.source is AuditSource.WORKER
+    assert audit_context.correlation_id == correlation_id
+    assert audit_context.request_id == origin_request_id
+
+
+def test_handler_preserves_missing_origin_request_id() -> None:
+    webhook_event_id = uuid4()
+    correlation_id = f"correlation-{uuid4()}"
+    processor = RecordingWebhookProcessor()
+    handler = ProcessBillingWebhookEventJobHandler(processor)
+
+    handler.execute(
+        _claimed_job(
+            payload={
+                "webhook_event_id": str(webhook_event_id),
+            },
+            correlation_id=correlation_id,
+            include_origin_request_id=False,
+        )
+    )
+
+    assert processor.processed_event_ids == [webhook_event_id]
+    audit_context = processor.received_audit_contexts[0]
+    assert audit_context.correlation_id == correlation_id
+    assert audit_context.request_id is None
+    assert audit_context.actor.actor_type is AuditActorType.SYSTEM
+    assert audit_context.source is AuditSource.WORKER
 
 
 def test_handler_rejects_unexpected_job_type() -> None:
@@ -186,6 +242,7 @@ def test_handler_rejects_unexpected_job_type() -> None:
 
     assert exception_info.value.error_code == "unexpected_billing_job_type"
     assert processor.processed_event_ids == []
+    assert processor.received_audit_contexts == []
 
 
 def test_handler_rejects_unsupported_payload_version() -> None:
@@ -258,6 +315,10 @@ def test_handler_requires_callable_processor() -> None:
 
 def test_sqlalchemy_processor_creates_fresh_session_and_invokes_service() -> None:
     webhook_event_id = uuid4()
+    audit_context = AuditRecordingContext.worker_system(
+        correlation_id="processor-correlation",
+        request_id="processor-request",
+    )
     session_factory = RecordingSessionFactory()
     process_service = RecordingProcessBillingWebhookEventService()
     processor = SqlAlchemyBillingWebhookEventProcessor(
@@ -265,7 +326,7 @@ def test_sqlalchemy_processor_creates_fresh_session_and_invokes_service() -> Non
         process_service=process_service,
     )
 
-    processor(webhook_event_id)
+    processor(webhook_event_id, audit_context)
 
     assert len(session_factory.sessions) == 1
     session = session_factory.sessions[0]
@@ -277,6 +338,7 @@ def test_sqlalchemy_processor_creates_fresh_session_and_invokes_service() -> Non
     assert process_service.received_commands[0] == (
         ProcessBillingWebhookEventCommand(
             webhook_event_id=webhook_event_id,
+            audit_context=audit_context,
         )
     )
 
@@ -289,7 +351,12 @@ def test_sqlalchemy_processor_commits_once_after_success() -> None:
         process_service=process_service,
     )
 
-    processor(uuid4())
+    processor(
+        uuid4(),
+        AuditRecordingContext.worker_system(
+            correlation_id="commit-correlation",
+        ),
+    )
 
     session = session_factory.sessions[0]
     assert session.commit_count == 1
@@ -308,7 +375,12 @@ def test_sqlalchemy_processor_rolls_back_and_reraises_on_failure() -> None:
     )
 
     with pytest.raises(RuntimeError) as exception_info:
-        processor(uuid4())
+        processor(
+            uuid4(),
+            AuditRecordingContext.worker_system(
+                correlation_id="rollback-correlation",
+            ),
+        )
 
     session = session_factory.sessions[0]
     assert exception_info.value is unexpected_error
@@ -327,9 +399,16 @@ def test_sqlalchemy_processor_uses_separate_sessions_per_call() -> None:
 
     first_event_id = uuid4()
     second_event_id = uuid4()
+    first_context = AuditRecordingContext.worker_system(
+        correlation_id="first-correlation",
+    )
+    second_context = AuditRecordingContext.worker_system(
+        correlation_id="second-correlation",
+        request_id="second-request",
+    )
 
-    processor(first_event_id)
-    processor(second_event_id)
+    processor(first_event_id, first_context)
+    processor(second_event_id, second_context)
 
     assert len(session_factory.sessions) == 2
     assert len(process_service.received_sessions) == 2
@@ -340,6 +419,8 @@ def test_sqlalchemy_processor_uses_separate_sessions_per_call() -> None:
         first_event_id,
         second_event_id,
     ]
+    assert process_service.received_commands[0].audit_context is first_context
+    assert process_service.received_commands[1].audit_context is second_context
 
 
 def test_sqlalchemy_processor_defaults_to_real_processing_service() -> None:

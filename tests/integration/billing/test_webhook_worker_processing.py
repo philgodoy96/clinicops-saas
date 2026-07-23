@@ -17,12 +17,16 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from clinicops.api.v1.billing.webhooks import get_billing_webhook_clock
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
     BillingProvider,
     BillingWebhookEventStatus,
+    BillingWebhookEventType,
     SubscriptionStatus,
 )
 from clinicops.billing.jobs.constants import (
@@ -96,8 +100,17 @@ class ClaimVisibilityProbe:
     job_id: UUID
     engine: Engine
     observed_processing_claim: bool = False
+    received_audit_contexts: list[AuditRecordingContext] = field(
+        default_factory=list,
+    )
 
-    def __call__(self, webhook_event_id: UUID) -> None:
+    def __call__(
+        self,
+        webhook_event_id: UUID,
+        audit_context: AuditRecordingContext,
+    ) -> None:
+        self.received_audit_contexts.append(audit_context)
+
         with Session(self.engine) as session:
             try:
                 claimed_job = session.get(BackgroundJob, self.job_id)
@@ -111,6 +124,7 @@ class ClaimVisibilityProbe:
                     session,
                     ProcessBillingWebhookEventCommand(
                         webhook_event_id=webhook_event_id,
+                        audit_context=audit_context,
                     ),
                 )
                 session.commit()
@@ -374,6 +388,41 @@ def _load_event(webhook_event_id: UUID) -> BillingWebhookEvent:
         return event
 
 
+def _count_audit_rows(
+    tenant_id: UUID,
+    *,
+    action: str,
+) -> int:
+    with Session(get_engine()) as session:
+        return len(
+            list(
+                session.scalars(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.tenant_id == tenant_id,
+                        AuditLogEntry.action == action,
+                    )
+                ).all()
+            )
+        )
+
+
+def _load_audit_entry(
+    tenant_id: UUID,
+    *,
+    action: str,
+) -> AuditLogEntry:
+    with Session(get_engine()) as session:
+        entry = session.scalar(
+            select(AuditLogEntry).where(
+                AuditLogEntry.tenant_id == tenant_id,
+                AuditLogEntry.action == action,
+            )
+        )
+        assert entry is not None
+        session.expunge(entry)
+        return entry
+
+
 def _prioritize_job(job_id: UUID) -> None:
     with Session(get_engine()) as session:
         job = session.get(BackgroundJob, job_id)
@@ -532,10 +581,22 @@ def test_authenticated_webhook_is_processed_by_background_worker() -> None:
         assert result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert result.job_id == job.id
         assert probe.observed_processing_claim is True
+        assert len(probe.received_audit_contexts) == 1
+        audit_context = probe.received_audit_contexts[0]
+        assert audit_context.actor.actor_type is AuditActorType.SYSTEM
+        assert audit_context.actor.user_id is None
+        assert audit_context.actor.role is None
+        assert audit_context.source is AuditSource.WORKER
+        assert audit_context.correlation_id == correlation_id
+        assert audit_context.request_id == job.origin_request_id
 
         completed_job = _load_job(job.id)
         completed_event = _load_event(event.id)
         subscription = _load_subscription(prerequisites.subscription_id)
+        stored_audit = _load_audit_entry(
+            prerequisites.tenant_id,
+            action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+        )
 
         assert completed_job.status is BackgroundJobStatus.SUCCEEDED
         assert completed_job.processing_attempt_count == 1
@@ -564,6 +625,25 @@ def test_authenticated_webhook_is_processed_by_background_worker() -> None:
         assert subscription.current_period_end == NEXT_PERIOD_END
         assert subscription.provider_state_version == 5
         assert subscription.last_provider_event_at == PERIOD_END
+
+        assert stored_audit.resource_type == (AuditResourceType.BILLING_WEBHOOK_EVENT.value)
+        assert stored_audit.resource_id == str(event.id)
+        assert stored_audit.actor_type == AuditActorType.SYSTEM.value
+        assert stored_audit.source == AuditSource.WORKER.value
+        assert stored_audit.correlation_id == correlation_id
+        assert stored_audit.request_id == job.origin_request_id
+        assert stored_audit.event_metadata == {
+            "event_type": BillingWebhookEventType.SUBSCRIPTION_RENEWED.value,
+            "processing_outcome": "processed",
+        }
+        assert stored_audit.idempotency_key == (f"billing-webhook-audit:{event.id}:processed")
+        assert (
+            _count_audit_rows(
+                prerequisites.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 1
+        )
     finally:
         _cleanup(resources)
 
@@ -758,5 +838,12 @@ def test_replayed_billing_event_job_remains_domain_safe() -> None:
         )
         assert _event_count(provider_event_id) == 1
         assert _job_count_for_webhook_event_id(event.id) == 2
+        assert (
+            _count_audit_rows(
+                prerequisites.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 1
+        )
     finally:
         _cleanup(resources)

@@ -4,9 +4,14 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand, RecordedAuditLog
+from clinicops.audit.enums import AuditActorType, AuditSource
+from clinicops.audit.models import AuditLogEntry
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -78,6 +83,19 @@ class FixedClock:
         return PROCESSED_AT
 
 
+class SimulatedAuditRecordingError(RuntimeError):
+    """Represent a deterministic audit recording failure."""
+
+
+class FailingAuditRecorder:
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        raise SimulatedAuditRecordingError("audit recording failed")
+
+
 class FailOnCompletionWebhookEventRepository(BillingWebhookEventRepository):
     """Fail after Transaction B has flushed its dirty state."""
 
@@ -91,6 +109,30 @@ class FailOnCompletionWebhookEventRepository(BillingWebhookEventRepository):
             raise RuntimeError("Simulated completion persistence failure.")
 
         super().flush(session)
+
+
+def _audit_context(
+    *,
+    correlation_id: str | None = None,
+    request_id: str | None = "billing-webhook-processing-request",
+) -> AuditRecordingContext:
+    return AuditRecordingContext.worker_system(
+        correlation_id=(
+            correlation_id if correlation_id is not None else f"webhook-processing-{uuid4()}"
+        ),
+        request_id=request_id,
+    )
+
+
+def _command(
+    webhook_event_id: UUID,
+    *,
+    audit_context: AuditRecordingContext | None = None,
+) -> ProcessBillingWebhookEventCommand:
+    return ProcessBillingWebhookEventCommand(
+        webhook_event_id=webhook_event_id,
+        audit_context=audit_context or _audit_context(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +299,7 @@ def _process(
     webhook_event_id: UUID,
     *,
     service: ProcessBillingWebhookEventService | None = None,
+    audit_context: AuditRecordingContext | None = None,
 ) -> ProcessedBillingWebhookEvent:
     resolved_service = (
         service if service is not None else ProcessBillingWebhookEventService(clock=FixedClock())
@@ -265,7 +308,28 @@ def _process(
     with Session(get_engine()) as session:
         return resolved_service.execute(
             session,
-            ProcessBillingWebhookEventCommand(webhook_event_id=webhook_event_id),
+            _command(
+                webhook_event_id,
+                audit_context=audit_context,
+            ),
+        )
+
+
+def _count_audit_rows(
+    tenant_id: UUID,
+    *,
+    action: str,
+) -> int:
+    with Session(get_engine()) as session:
+        return len(
+            list(
+                session.scalars(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.tenant_id == tenant_id,
+                        AuditLogEntry.action == action,
+                    )
+                ).all()
+            )
         )
 
 
@@ -306,6 +370,7 @@ def _cleanup(
         )
 
         if tenant_id is not None:
+            session.execute(delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id))
             session.execute(delete(Subscription).where(Subscription.tenant_id == tenant_id))
             session.execute(delete(BillingCustomer).where(BillingCustomer.tenant_id == tenant_id))
             session.execute(delete(Tenant).where(Tenant.id == tenant_id))
@@ -476,6 +541,204 @@ def test_completion_failure_rolls_back_subscription_and_event_together() -> None
         assert subscription.current_period_end == PERIOD_END
         assert subscription.provider_state_version == 4
         assert subscription.last_provider_event_at is None
+        assert (
+            _count_audit_rows(
+                fixture.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 0
+        )
+    finally:
+        _cleanup(
+            tenant_id=fixture.tenant_id,
+            webhook_event_ids=(event_id,),
+        )
+
+
+def test_processed_webhook_and_audit_commit_together() -> None:
+    fixture = _persist_subscription(pending_price_code="professional_monthly")
+    event_id = _persist_renewal_event(
+        provider_subscription_id=(fixture.provider_subscription_id),
+        price_code="professional_monthly",
+    )
+    context = _audit_context(
+        correlation_id=f"processed-audit-{uuid4()}",
+        request_id="processed-webhook-request",
+    )
+
+    try:
+        result = _process(event_id, audit_context=context)
+        subscription = _load_subscription(fixture.subscription_id)
+        event = _load_event(event_id)
+
+        with Session(get_engine()) as verification_session:
+            stored_audit = verification_session.scalar(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.tenant_id == fixture.tenant_id,
+                    AuditLogEntry.action == AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+                )
+            )
+
+        assert result.outcome is BillingWebhookProcessingOutcome.APPLIED
+        assert event.status is BillingWebhookEventStatus.PROCESSED
+        assert subscription.price_code == "professional_monthly"
+        assert stored_audit is not None
+        assert stored_audit.resource_type == (AuditResourceType.BILLING_WEBHOOK_EVENT.value)
+        assert stored_audit.resource_id == str(event_id)
+        assert stored_audit.actor_type == AuditActorType.SYSTEM.value
+        assert stored_audit.actor_user_id is None
+        assert stored_audit.actor_role is None
+        assert stored_audit.source == AuditSource.WORKER.value
+        assert stored_audit.request_id == context.request_id
+        assert stored_audit.correlation_id == context.correlation_id
+        assert stored_audit.metadata_version == 1
+        assert stored_audit.event_metadata == {
+            "event_type": BillingWebhookEventType.SUBSCRIPTION_RENEWED.value,
+            "processing_outcome": "processed",
+        }
+        assert stored_audit.idempotency_key == (f"billing-webhook-audit:{event_id}:processed")
+    finally:
+        _cleanup(
+            tenant_id=fixture.tenant_id,
+            webhook_event_ids=(event_id,),
+        )
+
+
+def test_ignored_webhook_and_audit_commit_together() -> None:
+    fixture = _persist_subscription(pending_price_code="professional_monthly")
+    event_id = _persist_renewal_event(
+        provider_subscription_id=(fixture.provider_subscription_id),
+        provider_state_version=4,
+        price_code="professional_monthly",
+    )
+    context = _audit_context(correlation_id=f"ignored-audit-{uuid4()}")
+
+    try:
+        result = _process(event_id, audit_context=context)
+
+        with Session(get_engine()) as verification_session:
+            stored_audit = verification_session.scalar(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.tenant_id == fixture.tenant_id,
+                    AuditLogEntry.action == AuditAction.BILLING_WEBHOOK_IGNORED.value,
+                )
+            )
+            processed_audit = verification_session.scalar(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.tenant_id == fixture.tenant_id,
+                    AuditLogEntry.action == AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+                )
+            )
+
+        assert result.outcome is BillingWebhookProcessingOutcome.IGNORED
+        assert stored_audit is not None
+        assert stored_audit.event_metadata == {
+            "event_type": BillingWebhookEventType.SUBSCRIPTION_RENEWED.value,
+            "processing_outcome": "ignored",
+        }
+        assert stored_audit.idempotency_key == (f"billing-webhook-audit:{event_id}:ignored")
+        assert processed_audit is None
+    finally:
+        _cleanup(
+            tenant_id=fixture.tenant_id,
+            webhook_event_ids=(event_id,),
+        )
+
+
+def test_audit_failure_prevents_billing_and_webhook_commit() -> None:
+    fixture = _persist_subscription(pending_price_code="professional_monthly")
+    event_id = _persist_renewal_event(
+        provider_subscription_id=(fixture.provider_subscription_id),
+        price_code="professional_monthly",
+    )
+    service = ProcessBillingWebhookEventService(
+        clock=FixedClock(),
+        audit_recorder=FailingAuditRecorder(),
+    )
+
+    try:
+        with pytest.raises(SimulatedAuditRecordingError):
+            _process(event_id, service=service)
+
+        subscription = _load_subscription(fixture.subscription_id)
+        event = _load_event(event_id)
+
+        assert event.status is BillingWebhookEventStatus.PROCESSING
+        assert event.processing_attempt_count == 1
+        assert event.processed_at is None
+        assert subscription.price_code == "starter_monthly"
+        assert subscription.provider_state_version == 4
+        assert (
+            _count_audit_rows(
+                fixture.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 0
+        )
+    finally:
+        _cleanup(
+            tenant_id=fixture.tenant_id,
+            webhook_event_ids=(event_id,),
+        )
+
+
+def test_successful_processed_replay_emits_one_audit_row() -> None:
+    fixture = _persist_subscription(pending_price_code="professional_monthly")
+    event_id = _persist_renewal_event(
+        provider_subscription_id=(fixture.provider_subscription_id),
+        price_code="professional_monthly",
+    )
+    context = _audit_context(correlation_id=f"replay-processed-{uuid4()}")
+
+    try:
+        first = _process(event_id, audit_context=context)
+        replayed = _process(event_id, audit_context=context)
+
+        assert first.outcome is BillingWebhookProcessingOutcome.APPLIED
+        assert replayed.outcome is BillingWebhookProcessingOutcome.APPLIED
+        assert (
+            _count_audit_rows(
+                fixture.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 1
+        )
+    finally:
+        _cleanup(
+            tenant_id=fixture.tenant_id,
+            webhook_event_ids=(event_id,),
+        )
+
+
+def test_successful_ignored_replay_emits_one_audit_row() -> None:
+    fixture = _persist_subscription(pending_price_code="professional_monthly")
+    event_id = _persist_renewal_event(
+        provider_subscription_id=(fixture.provider_subscription_id),
+        provider_state_version=4,
+        price_code="professional_monthly",
+    )
+    context = _audit_context(correlation_id=f"replay-ignored-{uuid4()}")
+
+    try:
+        first = _process(event_id, audit_context=context)
+        replayed = _process(event_id, audit_context=context)
+
+        assert first.outcome is BillingWebhookProcessingOutcome.IGNORED
+        assert replayed.outcome is BillingWebhookProcessingOutcome.IGNORED
+        assert (
+            _count_audit_rows(
+                fixture.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_IGNORED.value,
+            )
+            == 1
+        )
+        assert (
+            _count_audit_rows(
+                fixture.tenant_id,
+                action=AuditAction.BILLING_WEBHOOK_PROCESSED.value,
+            )
+            == 0
+        )
     finally:
         _cleanup(
             tenant_id=fixture.tenant_id,

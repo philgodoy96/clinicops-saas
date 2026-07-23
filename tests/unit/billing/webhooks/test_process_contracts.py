@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.billing.enums import (
     BillingWebhookEventStatus,
     BillingWebhookEventType,
@@ -19,8 +20,18 @@ from clinicops.billing.webhooks.process import (
 )
 
 
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.worker_system(
+        correlation_id="billing-webhook-correlation-id",
+        request_id="billing-webhook-request-id",
+    )
+
+
 def test_processing_command_is_immutable() -> None:
-    command = ProcessBillingWebhookEventCommand(webhook_event_id=uuid4())
+    command = ProcessBillingWebhookEventCommand(
+        webhook_event_id=uuid4(),
+        audit_context=_audit_context(),
+    )
 
     with pytest.raises(FrozenInstanceError):
         command.webhook_event_id = uuid4()  # type: ignore[misc]
@@ -33,6 +44,29 @@ def test_processing_command_requires_uuid_event_id() -> None:
     ):
         ProcessBillingWebhookEventCommand(
             webhook_event_id="not-a-uuid",  # type: ignore[arg-type]
+            audit_context=_audit_context(),
+        )
+
+
+def test_processing_command_requires_audit_context() -> None:
+    context = _audit_context()
+    command = ProcessBillingWebhookEventCommand(
+        webhook_event_id=uuid4(),
+        audit_context=context,
+    )
+
+    assert command.audit_context is context
+
+    with pytest.raises(FrozenInstanceError):
+        command.audit_context = _audit_context()  # type: ignore[misc]
+
+    with pytest.raises(
+        TypeError,
+        match="AuditRecordingContext",
+    ):
+        ProcessBillingWebhookEventCommand(
+            webhook_event_id=uuid4(),
+            audit_context="not-a-context",  # type: ignore[arg-type]
         )
 
 

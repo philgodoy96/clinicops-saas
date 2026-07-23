@@ -3,6 +3,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.billing.enums import (
     BillingProvider,
     BillingWebhookEventStatus,
@@ -31,16 +35,22 @@ from clinicops.billing.webhooks.handlers import (
 )
 from clinicops.core.clock import Clock, SystemClock
 
+_AUDIT_IDEMPOTENCY_KEY_PREFIX = "billing-webhook-audit"
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessBillingWebhookEventCommand:
     """Identify one durably ingested billing event to process."""
 
     webhook_event_id: UUID
+    audit_context: AuditRecordingContext
 
     def __post_init__(self) -> None:
         if not isinstance(self.webhook_event_id, UUID):
             raise TypeError("The billing webhook event ID must be a UUID.")
+
+        if not isinstance(self.audit_context, AuditRecordingContext):
+            raise TypeError("audit_context must be an AuditRecordingContext.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +243,7 @@ class ProcessBillingWebhookEventService:
         webhook_event_repository: (BillingWebhookEventRepository | None) = None,
         subscription_repository: (SubscriptionRepository | None) = None,
         clock: Clock | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._webhook_event_repository = (
             webhook_event_repository
@@ -245,6 +256,9 @@ class ProcessBillingWebhookEventService:
             else SubscriptionRepository()
         )
         self._clock = clock if clock is not None else SystemClock()
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
         self._claim_service = ClaimBillingWebhookEventService(
             webhook_event_repository=(self._webhook_event_repository)
         )
@@ -264,6 +278,7 @@ class ProcessBillingWebhookEventService:
 
         return self._complete_processing(
             session=session,
+            command=command,
             claim=claim,
         )
 
@@ -271,6 +286,7 @@ class ProcessBillingWebhookEventService:
         self,
         *,
         session: Session,
+        command: ProcessBillingWebhookEventCommand,
         claim: BillingWebhookEventClaim,
     ) -> ProcessedBillingWebhookEvent:
         event = self._webhook_event_repository.get_by_id_for_update(
@@ -284,6 +300,7 @@ class ProcessBillingWebhookEventService:
         if claim.replayed:
             return self._replay_completed_event(
                 session=session,
+                command=command,
                 claim=claim,
                 event=event,
             )
@@ -329,7 +346,9 @@ class ProcessBillingWebhookEventService:
 
         self._persist_success(
             session=session,
+            command=command,
             event=event,
+            subscription=subscription,
             handler_result=handler_result,
         )
 
@@ -344,6 +363,7 @@ class ProcessBillingWebhookEventService:
         self,
         *,
         session: Session,
+        command: ProcessBillingWebhookEventCommand,
         claim: BillingWebhookEventClaim,
         event: BillingWebhookEvent,
     ) -> ProcessedBillingWebhookEvent:
@@ -364,6 +384,13 @@ class ProcessBillingWebhookEventService:
             if event.status is BillingWebhookEventStatus.PROCESSED
             else BillingWebhookProcessingOutcome.IGNORED
         )
+        self._record_outcome_audit(
+            session=session,
+            command=command,
+            event=event,
+            tenant_id=subscription.tenant_id,
+            outcome=outcome,
+        )
         result = _to_processed_result(
             event=event,
             event_type=claim.event_type,
@@ -378,7 +405,9 @@ class ProcessBillingWebhookEventService:
         self,
         *,
         session: Session,
+        command: ProcessBillingWebhookEventCommand,
         event: BillingWebhookEvent,
+        subscription: Subscription,
         handler_result: BillingWebhookHandlerResult,
     ) -> None:
         event.status = {
@@ -391,7 +420,57 @@ class ProcessBillingWebhookEventService:
 
         self._subscription_repository.flush(session)
         self._webhook_event_repository.flush(session)
+        self._record_outcome_audit(
+            session=session,
+            command=command,
+            event=event,
+            tenant_id=subscription.tenant_id,
+            outcome=handler_result.outcome,
+        )
         session.commit()
+
+    def _record_outcome_audit(
+        self,
+        *,
+        session: Session,
+        command: ProcessBillingWebhookEventCommand,
+        event: BillingWebhookEvent,
+        tenant_id: UUID,
+        outcome: BillingWebhookProcessingOutcome,
+    ) -> None:
+        audit_context = command.audit_context
+        action, processing_outcome = {
+            BillingWebhookProcessingOutcome.APPLIED: (
+                AuditAction.BILLING_WEBHOOK_PROCESSED,
+                "processed",
+            ),
+            BillingWebhookProcessingOutcome.IGNORED: (
+                AuditAction.BILLING_WEBHOOK_IGNORED,
+                "ignored",
+            ),
+        }[outcome]
+
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=action.value,
+                resource_type=(AuditResourceType.BILLING_WEBHOOK_EVENT.value),
+                resource_id=str(event.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "event_type": event.event_type,
+                    "processing_outcome": processing_outcome,
+                },
+                idempotency_key=(
+                    f"{_AUDIT_IDEMPOTENCY_KEY_PREFIX}:{event.id}:{processing_outcome}"
+                ),
+                request_id=audit_context.request_id,
+            ),
+        )
 
     def _persist_retryable_failure(
         self,

@@ -5,6 +5,13 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import (
+    RecordAuditLogCommand,
+    RecordedAuditLog,
+)
+from clinicops.audit.enums import AuditSource
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -75,6 +82,26 @@ class RecordingSession:
 
     def rollback(self) -> None:
         pass
+
+
+class RecordingAuditRecorder:
+    def __init__(self) -> None:
+        self.sessions: list[Session] = []
+        self.commands: list[RecordAuditLogCommand] = []
+
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        self.sessions.append(session)
+        self.commands.append(command)
+
+        return RecordedAuditLog(
+            audit_log_id=uuid4(),
+            created=True,
+            recorded_at=PROCESSED_AT,
+        )
 
 
 class RecordingWebhookRepository:
@@ -198,21 +225,41 @@ def _event(
     )
 
 
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.worker_system(
+        correlation_id="billing-webhook-cancellation-correlation",
+        request_id="billing-webhook-cancellation-request",
+    )
+
+
+def _command(*, webhook_event_id: UUID) -> ProcessBillingWebhookEventCommand:
+    return ProcessBillingWebhookEventCommand(
+        webhook_event_id=webhook_event_id,
+        audit_context=_audit_context(),
+    )
+
+
 def _service(
     *,
     event_repository: RecordingWebhookRepository,
     subscription_repository: (RecordingSubscriptionRepository),
-) -> ProcessBillingWebhookEventService:
-    return ProcessBillingWebhookEventService(
-        webhook_event_repository=cast(
-            BillingWebhookEventRepository,
-            event_repository,
+    audit_recorder: RecordingAuditRecorder | None = None,
+) -> tuple[ProcessBillingWebhookEventService, RecordingAuditRecorder]:
+    resolved_audit_recorder = audit_recorder or RecordingAuditRecorder()
+    return (
+        ProcessBillingWebhookEventService(
+            webhook_event_repository=cast(
+                BillingWebhookEventRepository,
+                event_repository,
+            ),
+            subscription_repository=cast(
+                SubscriptionRepository,
+                subscription_repository,
+            ),
+            clock=FixedClock(),
+            audit_recorder=resolved_audit_recorder,
         ),
-        subscription_repository=cast(
-            SubscriptionRepository,
-            subscription_repository,
-        ),
-        clock=FixedClock(),
+        resolved_audit_recorder,
     )
 
 
@@ -222,13 +269,14 @@ def test_processing_finalizes_scheduled_cancellation() -> None:
     event_repository = RecordingWebhookRepository(event)
     subscription_repository = RecordingSubscriptionRepository(subscription)
     session = RecordingSession()
-
-    result = _service(
+    service, recorder = _service(
         event_repository=event_repository,
         subscription_repository=(subscription_repository),
-    ).execute(
+    )
+
+    result = service.execute(
         cast(Session, session),
-        ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+        _command(webhook_event_id=event.id),
     )
 
     assert session.commit_count == 2
@@ -255,19 +303,32 @@ def test_processing_finalizes_scheduled_cancellation() -> None:
     assert result.status is BillingWebhookEventStatus.PROCESSED
     assert result.subscription_id == subscription.id
 
+    assert len(recorder.commands) == 1
+    assert recorder.sessions == [cast(Session, session)]
+    assert recorder.commands[0].action == (AuditAction.BILLING_WEBHOOK_PROCESSED.value)
+    assert recorder.commands[0].resource_type == (AuditResourceType.BILLING_WEBHOOK_EVENT.value)
+    assert recorder.commands[0].resource_id == str(event.id)
+    assert recorder.commands[0].source is AuditSource.WORKER
+    assert recorder.commands[0].metadata == {
+        "event_type": BillingWebhookEventType.SUBSCRIPTION_CANCELED.value,
+        "processing_outcome": "processed",
+    }
+    assert recorder.commands[0].idempotency_key == (f"billing-webhook-audit:{event.id}:processed")
+
 
 def test_stale_cancellation_is_marked_ignored() -> None:
     event = _event(provider_state_version=4)
     subscription = _subscription(provider_state_version=5)
     event_repository = RecordingWebhookRepository(event)
     subscription_repository = RecordingSubscriptionRepository(subscription)
-
-    result = _service(
+    service, recorder = _service(
         event_repository=event_repository,
         subscription_repository=(subscription_repository),
-    ).execute(
+    )
+
+    result = service.execute(
         cast(Session, RecordingSession()),
-        ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+        _command(webhook_event_id=event.id),
     )
 
     assert result.outcome is BillingWebhookProcessingOutcome.IGNORED
@@ -277,6 +338,14 @@ def test_stale_cancellation_is_marked_ignored() -> None:
     assert subscription.cancel_at_period_end is True
     assert subscription.canceled_at is None
     assert subscription.provider_state_version == 5
+
+    assert len(recorder.commands) == 1
+    assert recorder.commands[0].action == (AuditAction.BILLING_WEBHOOK_IGNORED.value)
+    assert recorder.commands[0].idempotency_key == (f"billing-webhook-audit:{event.id}:ignored")
+    assert recorder.commands[0].metadata == {
+        "event_type": BillingWebhookEventType.SUBSCRIPTION_CANCELED.value,
+        "processing_outcome": "ignored",
+    }
 
 
 def test_invalid_cancellation_is_persisted_as_terminal() -> None:
@@ -293,14 +362,15 @@ def test_invalid_cancellation_is_persisted_as_terminal() -> None:
     event_repository = RecordingWebhookRepository(event)
     subscription_repository = RecordingSubscriptionRepository(subscription)
     session = RecordingSession()
+    service, recorder = _service(
+        event_repository=event_repository,
+        subscription_repository=(subscription_repository),
+    )
 
     with pytest.raises(BillingWebhookEventTerminalFailureError) as exception_info:
-        _service(
-            event_repository=event_repository,
-            subscription_repository=(subscription_repository),
-        ).execute(
+        service.execute(
             cast(Session, session),
-            ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+            _command(webhook_event_id=event.id),
         )
 
     assert session.commit_count == 2
@@ -311,6 +381,7 @@ def test_invalid_cancellation_is_persisted_as_terminal() -> None:
     assert subscription.status is SubscriptionStatus.ACTIVE
     assert subscription.cancel_at_period_end is True
     assert subscription.canceled_at is None
+    assert recorder.commands == []
 
 
 def test_completed_cancellation_replays_without_new_attempt() -> None:
@@ -328,13 +399,14 @@ def test_completed_cancellation_replays_without_new_attempt() -> None:
     event_repository = RecordingWebhookRepository(event)
     subscription_repository = RecordingSubscriptionRepository(subscription)
     session = RecordingSession()
-
-    result = _service(
+    service, recorder = _service(
         event_repository=event_repository,
         subscription_repository=(subscription_repository),
-    ).execute(
+    )
+
+    result = service.execute(
         cast(Session, session),
-        ProcessBillingWebhookEventCommand(webhook_event_id=event.id),
+        _command(webhook_event_id=event.id),
     )
 
     assert session.commit_count == 2
@@ -343,3 +415,6 @@ def test_completed_cancellation_replays_without_new_attempt() -> None:
     assert subscription_repository.flush_count == 0
     assert result.event_type is BillingWebhookEventType.SUBSCRIPTION_CANCELED
     assert result.outcome is BillingWebhookProcessingOutcome.APPLIED
+    assert len(recorder.commands) == 1
+    assert recorder.commands[0].action == (AuditAction.BILLING_WEBHOOK_PROCESSED.value)
+    assert recorder.commands[0].idempotency_key == (f"billing-webhook-audit:{event.id}:processed")
