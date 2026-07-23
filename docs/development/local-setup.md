@@ -15,7 +15,8 @@ The current foundation includes:
 - Ruff;
 - mypy;
 - pytest;
-- Docker Compose.
+- Docker Compose;
+- API and worker processes from the same application package.
 
 ---
 
@@ -154,7 +155,9 @@ Check whether SQLAlchemy metadata requires an uncommitted migration:
 uv run alembic check
 ```
 
-The application does not create or modify the schema automatically during startup.
+The application does not create or modify the schema automatically during
+startup. Neither the API process nor the worker process runs Alembic
+automatically. Migrations remain explicit operator actions.
 
 ---
 
@@ -220,7 +223,41 @@ Ctrl + C
 
 ---
 
-## 10. Health Endpoints
+## 10. Run the Worker
+
+In a second terminal, start the background worker:
+
+```powershell
+uv run python -m clinicops.worker
+```
+
+The worker:
+
+- shares the same PostgreSQL database as the API;
+- claims and executes durable background jobs sequentially;
+- recovers stale processing claims on a configured cadence;
+- exposes no HTTP port.
+
+Stop the worker with:
+
+```text
+Ctrl + C
+```
+
+SIGINT and SIGTERM request graceful shutdown. An active handler is allowed to
+finish before the process exits.
+
+Direct local execution of the three common processes:
+
+```powershell
+uv run alembic upgrade head
+uv run uvicorn clinicops.main:app --reload
+uv run python -m clinicops.worker
+```
+
+---
+
+## 11. Health Endpoints
 
 ### Liveness
 
@@ -278,7 +315,7 @@ CLINICOPS_DATABASE_CONNECT_TIMEOUT_SECONDS
 
 ---
 
-## 11. Inspect Registered API Paths
+## 12. Inspect Registered API Paths
 
 Use the generated OpenAPI schema to inspect public endpoints:
 
@@ -294,7 +331,86 @@ uv run python -c "from clinicops.main import app; print([(path, list(methods)) f
 
 ---
 
-## 12. Run Automated Tests
+## 13. Run with Docker Compose
+
+API and worker processes are built from the same Docker image. Compose
+services are `postgres`, `api`, and `worker`.
+
+Start PostgreSQL:
+
+```powershell
+docker compose up -d postgres
+```
+
+Apply migrations explicitly through the API image. Neither `api` nor `worker`
+runs Alembic on startup:
+
+```powershell
+docker compose run --rm api alembic upgrade head
+```
+
+Start the API and worker:
+
+```powershell
+docker compose up -d api worker
+```
+
+Inspect service status:
+
+```powershell
+docker compose ps
+```
+
+Follow worker logs:
+
+```powershell
+docker compose logs -f worker
+```
+
+API logs can be inspected separately:
+
+```powershell
+docker compose logs -f api
+```
+
+Stop or start only the worker:
+
+```powershell
+docker compose stop worker
+docker compose start worker
+```
+
+Stop the Compose stack while preserving the named PostgreSQL volume:
+
+```powershell
+docker compose down
+```
+
+The worker exposes no published HTTP port. The API remains available on host
+port `8000` and serves:
+
+```text
+GET /api/v1/health/live
+GET /api/v1/health/ready
+```
+
+Container `init` forwards SIGINT and SIGTERM to the worker process. The worker
+service uses a stop grace period long enough for an active handler to finish.
+
+To run multiple worker processes against the same queue, scale the `worker`
+service. The current Compose file publishes no ports on `worker`, so scaling is
+valid:
+
+```powershell
+docker compose up -d --scale worker=2 api worker
+```
+
+Do not invent additional worker services or shell scripts that are not present
+in the repository.
+
+---
+
+## 14. Run Automated Tests
 
 Ensure PostgreSQL is running:
 
@@ -326,7 +442,7 @@ Integration database tests use the local PostgreSQL instance configured through 
 
 ---
 
-## 13. Run Quality Checks
+## 15. Run Quality Checks
 
 Format the code:
 
@@ -379,7 +495,7 @@ uv build
 
 ---
 
-## 14. Create a Database Migration
+## 16. Create a Database Migration
 
 After changing SQLAlchemy models, create a migration:
 
@@ -400,7 +516,7 @@ Generated migrations must not be accepted without reviewing their upgrade and do
 
 ---
 
-## 15. Stop or Reset Local Infrastructure
+## 17. Stop or Reset Local Infrastructure
 
 Stop the PostgreSQL container while preserving its data:
 
@@ -414,17 +530,19 @@ Stop and remove the Compose containers while preserving the named volume:
 docker compose down
 ```
 
+PostgreSQL data remains durable unless volumes are explicitly removed.
+
 Remove the containers and local database volume:
 
 ```powershell
 docker compose down -v
 ```
 
-Removing the volume permanently deletes the local PostgreSQL data.
+`docker compose down -v` permanently deletes the local PostgreSQL data volume.
 
 ---
 
-## 16. Common Troubleshooting
+## 18. Common Troubleshooting
 
 ### PostgreSQL Port Conflict
 
@@ -445,6 +563,64 @@ Restart the service after changing the port:
 docker compose down
 docker compose up -d postgres
 ```
+
+### Worker Cannot Connect to PostgreSQL
+
+Confirm PostgreSQL is healthy and the worker database URL points at the intended
+host:
+
+```powershell
+docker compose ps
+docker compose exec postgres pg_isready -U clinicops -d clinicops
+uv run python -c "from clinicops.core.config import get_settings; print(get_settings().database_url)"
+```
+
+When using Compose, the API and worker override
+`CLINICOPS_DATABASE_URL` to reach the `postgres` service hostname.
+
+### Migrations Have Not Been Applied
+
+Apply migrations explicitly before starting the API or worker:
+
+```powershell
+uv run alembic upgrade head
+```
+
+Or through Compose:
+
+```powershell
+docker compose run --rm api alembic upgrade head
+```
+
+Confirm the revision:
+
+```powershell
+uv run alembic current
+```
+
+### No Jobs Are Available
+
+An idle worker is expected when the queue has no eligible work. Confirm the API
+is receiving webhook deliveries and that jobs are being enqueued after
+authenticated ingestion. Inspect API and worker logs separately:
+
+```powershell
+docker compose logs -f api
+docker compose logs -f worker
+```
+
+### Job Remains Processing After a Forced Crash
+
+A claimed job remains `processing` until its lease expires. The worker recovers
+stale claims on its configured cadence. Wait for lease expiration and recovery,
+or inspect the job row in PostgreSQL. Heartbeat or lease extension is not
+implemented.
+
+### Worker Receives an Unknown Job Type
+
+Unknown job types are terminal failures. The worker dead-letters the job
+through the explicit handler registry. Confirm the job type matches a
+registered handler such as `billing.webhook.process`.
 
 ### Readiness Request Waits Too Long
 
@@ -494,7 +670,7 @@ uv sync --locked --all-groups
 
 ---
 
-## 17. Local Development Checklist
+## 19. Local Development Checklist
 
 Before starting application work:
 
@@ -503,6 +679,7 @@ Before starting application work:
 [ ] PostgreSQL is healthy
 [ ] Alembic is at the current head
 [ ] The API starts successfully
+[ ] The worker starts successfully
 [ ] Liveness returns HTTP 200
 [ ] Readiness returns HTTP 200
 [ ] Formatting passes

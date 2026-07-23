@@ -51,17 +51,18 @@ Billing Foundation
 Fake Payment Provider and Webhook Security
 Idempotent Webhook Processing
 Billing Reconciliation and Concurrency Protections
+Background Jobs & Worker
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, and request and correlation identifiers.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, and API and worker container services.
 
-Billing is complete for its approved synchronous and local-provider boundary. Remaining work does not reopen that boundary as incomplete.
+Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
+
+Background Jobs & Worker is complete. Periodic reconciliation scheduling remains intentionally deferred beyond that milestone.
 
 ### Remaining current-release milestones
 
 ```text
-Background Jobs & Worker
-    |
 Durable Audit Logs
     |
 Patients Domain
@@ -71,15 +72,13 @@ Professionals Domain
 Final Hardening & Portfolio Release
 ```
 
-Background Jobs & Worker remains the active macro-milestone. Its durable queue
-foundation is complete; worker runtime and billing integration remain
-incomplete.
+Durable Audit Logs is the active macro-milestone.
 
 This documentation-alignment work corrects public project scope. It is not itself a functional milestone.
 
 ---
 
-## 4. Milestone 1 — Background Jobs & Worker
+## 4. Completed — Background Jobs & Worker
 
 ### Objective
 
@@ -87,45 +86,27 @@ Introduce PostgreSQL-backed durable jobs and a separate worker process that can
 claim, execute, retry, and recover asynchronous work safely.
 
 PostgreSQL is the deliberate source of truth for both domain state and queue
-coordination. The durable queue foundation is implemented. The worker runtime
-and billing integration remain incomplete within this same macro-milestone.
+coordination. The API and worker are separate processes from the same codebase
+and the same Docker image.
 
-### Completed foundation
+### Completed slices
 
-The following queue-foundation slices are implemented:
-
-- `BackgroundJob` persistence and migration `0008_add_background_jobs`;
-- PostgreSQL JSONB payloads with payload versioning;
-- lifecycle states, database constraints, and partial idempotency-key
-  uniqueness;
-- idempotent transactional enqueueing with caller-owned commit;
-- semantic replay comparison, availability scheduling, and priority ordering;
-- safe concurrent claiming with `FOR UPDATE SKIP LOCKED`;
-- claim tokens, worker ownership, and processing leases;
-- successful completion, retryable failure, and terminal failure handling;
-- exponential backoff with equal jitter and a maximum-delay cap;
-- dead-letter state and stale-processing recovery;
-- bounded and sanitized failure metadata;
-- unit tests, PostgreSQL integration tests, and concurrency and failure-path
-  tests;
-- architecture documentation in `docs/architecture/background-jobs.md`.
-
-### Remaining deliverables
-
-The following slices remain inside Background Jobs & Worker:
-
-- worker composition root and continuous execution loop;
+- durable persistence and migration;
+- idempotent enqueueing;
+- concurrent claiming;
+- completion, retries, and dead-lettering;
+- stale recovery;
+- concurrency and failure testing;
 - handler registry;
-- transactional webhook-job enqueue integration;
-- billing webhook-processing handler;
-- reconciliation handler or scheduling decision;
-- graceful shutdown;
-- worker-specific settings;
-- Docker and Compose worker integration;
-- end-to-end webhook-to-job processing tests;
-- operational worker documentation.
+- worker runtime;
+- billing webhook handler;
+- atomic webhook ingestion and enqueueing;
+- end-to-end billing job execution;
+- worker process entrypoint;
+- API and worker container services;
+- architecture and operational documentation.
 
-### Engineering Risks
+### Engineering risks addressed
 
 - two workers claiming the same job;
 - duplicate side effects;
@@ -135,33 +116,19 @@ The following slices remain inside Background Jobs & Worker:
 - non-deterministic retry tests;
 - sensitive payload contents.
 
-### Test Focus
-
-Completed foundation coverage includes durable enqueue, concurrent
-acquisition, retry scheduling, maximum attempts, dead-letter behavior, and
-stale-processing recovery.
-
-Remaining coverage must include:
-
-- correlation propagation through the worker runtime;
-- idempotent billing job handlers;
-- end-to-end webhook-to-job processing.
-
-### Completion Criteria
-
-This macro-milestone is complete when:
+### Completion criteria met
 
 - jobs are durably stored;
 - multiple workers coordinate safely through the worker runtime;
 - failures remain inspectable;
-- billing webhook processing and reconciliation can execute asynchronously
-  through the worker.
+- billing webhook processing executes asynchronously through the worker.
 
-The durable queue foundation alone does not complete this milestone.
+Periodic billing subscription reconciliation scheduling remains intentionally
+deferred.
 
 ---
 
-## 5. Milestone 2 — Durable Audit Logs
+## 5. Milestone 1 — Durable Audit Logs
 
 ### Objective
 
@@ -206,7 +173,7 @@ Introduce append-only, tenant-scoped business audit records distinct from applic
 
 ---
 
-## 6. Milestone 3 — Patients Domain
+## 6. Milestone 2 — Patients Domain
 
 ### Objective
 
@@ -245,7 +212,7 @@ Implement tenant-owned patient records as operational clinic data, not platform 
 
 ---
 
-## 7. Milestone 4 — Professionals Domain
+## 7. Milestone 3 — Professionals Domain
 
 ### Objective
 
@@ -284,7 +251,7 @@ Implement tenant-owned professional profiles distinct from global Users and Memb
 
 ---
 
-## 8. Milestone 5 — Final Hardening & Portfolio Release
+## 8. Milestone 4 — Final Hardening & Portfolio Release
 
 ### Objective
 
@@ -356,6 +323,7 @@ The following capabilities are intentionally deferred beyond the current release
 - frontend application;
 - automatic provider subscription discovery;
 - administrative billing reconciliation endpoints;
+- periodic billing subscription reconciliation scheduling;
 - complex reactivation or undo-cancellation workflows.
 
 Appointments remain a natural future extension after Patients and Professionals establish tenant-owned operational boundaries.
@@ -440,18 +408,7 @@ Roadmap changes should preserve the project's primary goals:
 
 ## 13. Next Milestone
 
-The next implementation milestone remains Background Jobs & Worker.
+The next implementation milestone is Durable Audit Logs.
 
-The durable PostgreSQL-backed queue foundation is already in place. Remaining
-work in this milestone introduces:
-
-- worker composition root and execution loop;
-- handler registry;
-- transactional webhook-job enqueue integration;
-- billing webhook-processing and reconciliation handlers;
-- graceful shutdown and worker settings;
-- Docker and Compose worker integration;
-- end-to-end webhook-to-job processing tests;
-- operational worker documentation.
-
-Durable Audit Logs, Patients, Professionals, and Final Hardening follow in that order.
+Patients Domain, Professionals Domain, and Final Hardening & Portfolio Release
+follow in that order.

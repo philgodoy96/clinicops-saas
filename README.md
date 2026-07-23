@@ -24,11 +24,14 @@ ClinicOps currently has an implemented backend foundation covering:
 - membership administration and ownership transfer;
 - billing lifecycle;
 - webhook ingestion and processing;
-- billing reconciliation.
+- billing reconciliation;
+- PostgreSQL-backed durable background jobs;
+- worker runtime and billing webhook job execution;
+- Docker Compose services for PostgreSQL, API, and worker.
 
-The project is not yet at its final portfolio release. Operational background execution, auditability, and tenant-owned operational domains remain under development.
+The project is not yet at its final portfolio release. Durable auditability and tenant-owned operational domains remain under development.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria.
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active macro-milestone is Durable Audit Logs.
 
 ---
 
@@ -178,18 +181,19 @@ API Client
     v
 FastAPI API Process
     |
-    v
-PostgreSQL
+    +------------------+
+    |                  |
+    v                  v
+PostgreSQL <----- Worker Process
 ```
 
-The architecture is designed so that a separate background worker process can share the same codebase when operational job execution is introduced.
-
-PostgreSQL is the source of truth for:
+The API and worker are separate processes built from the same codebase and the same Docker image. They share PostgreSQL as the source of truth for:
 
 - application data;
 - membership state;
 - billing state;
-- payment events.
+- payment events;
+- background job coordination.
 
 ---
 
@@ -259,23 +263,23 @@ The project explicitly addresses:
 
 ## Background Jobs
 
-ClinicOps is designed to use a PostgreSQL-backed job queue for durable asynchronous work. Operational worker runtime and persisted job execution remain under development.
+ClinicOps uses a PostgreSQL-backed job queue for durable asynchronous work. No external message broker is required for the current architecture.
 
-The target queue design includes:
+The implemented queue and worker runtime provide:
 
 - durable enqueueing;
-- worker-safe acquisition;
-- `FOR UPDATE SKIP LOCKED`;
-- retry scheduling;
-- exponential backoff;
-- jitter;
-- stale-lock recovery;
-- dead-job inspection;
+- worker-safe acquisition with `FOR UPDATE SKIP LOCKED`;
+- sequential one-job-at-a-time execution per worker process;
+- horizontal scaling through multiple worker processes;
+- retry scheduling with exponential backoff and jitter;
+- stale-claim recovery;
+- claim-token ownership;
+- graceful shutdown;
 - correlation ID propagation.
 
-Execution is intended to follow at-least-once semantics.
+Delivery follows at-least-once semantics. Handlers that may repeat side effects must be idempotent.
 
-Handlers that may repeat side effects must be idempotent.
+Detailed queue and worker architecture lives in [Background Jobs](docs/architecture/background-jobs.md).
 
 ---
 
@@ -289,10 +293,14 @@ The current foundation covers:
 - signed webhook ingestion;
 - raw-body HMAC verification;
 - durable webhook storage and duplicate handling;
+- atomic webhook-event persistence and processing-job enqueueing;
+- asynchronous `billing.webhook.process` execution through the worker;
 - webhook processing with provider-state ordering;
 - billing reconciliation.
 
-Provider-specific payloads are translated before entering the billing domain.
+Authenticated provider deliveries persist a durable event, enqueue one semantic processing job in the same HTTP transaction, and return `202 Accepted`. The worker claims the job and applies billing state through the existing processing service.
+
+Provider-specific payloads are translated before entering the billing domain. Periodic subscription reconciliation scheduling remains intentionally deferred.
 
 ---
 
@@ -347,6 +355,8 @@ Audit records and application logs serve different purposes and are intended to 
 - [Tenant Onboarding Model](docs/architecture/tenant-onboarding.md)
 - [Membership Administration Model](docs/architecture/membership-administration.md)
 - [Billing Lifecycle](docs/architecture/billing-lifecycle.md)
+- [Background Jobs](docs/architecture/background-jobs.md)
+- [Security](docs/architecture/security.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
 
@@ -400,11 +410,12 @@ Additional architecture documents and ADRs will be added as implementation intro
 
 ### Operational Capabilities
 
-- PostgreSQL-backed worker;
+- PostgreSQL-backed durable jobs and worker runtime;
+- billing webhook asynchronous processing;
 - retry and dead-job behavior;
-- audit APIs;
-- Platform Admin APIs;
-- failure and concurrency hardening.
+- Durable Audit Logs;
+- Patients and Professionals domains;
+- Final Hardening and portfolio release.
 
 ---
 
