@@ -26,10 +26,12 @@ from clinicops.billing.webhooks.signatures import (
 )
 from clinicops.core.config import Environment, Settings
 from clinicops.db.session import get_engine
+from clinicops.jobs.models import BackgroundJob
 from clinicops.main import create_app
 from tests.conftest import IsolatedSettings
 
 SECRET = "integration-billing-webhook-secret-123456"
+_BILLING_WEBHOOK_PROCESS_IDEMPOTENCY_PREFIX = "billing-webhook-process"
 NOW = datetime(
     2026,
     8,
@@ -133,6 +135,26 @@ def _cleanup_events(
     *provider_event_ids: str,
 ) -> None:
     with Session(get_engine()) as session:
+        event_ids = list(
+            session.scalars(
+                select(BillingWebhookEvent.id).where(
+                    BillingWebhookEvent.provider == BillingProvider.FAKE,
+                    BillingWebhookEvent.provider_event_id.in_(provider_event_ids),
+                )
+            )
+        )
+
+        if event_ids:
+            idempotency_keys = [
+                f"{_BILLING_WEBHOOK_PROCESS_IDEMPOTENCY_PREFIX}:{event_id}"
+                for event_id in event_ids
+            ]
+            session.execute(
+                delete(BackgroundJob).where(
+                    BackgroundJob.idempotency_key.in_(idempotency_keys)
+                )
+            )
+
         session.execute(
             delete(BillingWebhookEvent).where(
                 BillingWebhookEvent.provider == BillingProvider.FAKE,
