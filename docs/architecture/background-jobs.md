@@ -594,7 +594,14 @@ Completion or failure transaction
     -> commit
 ```
 
-Billing webhook handling follows this model: the claim commits first, `ProcessBillingWebhookEventService` runs in a fresh billing transaction, and queue completion or failure is recorded afterward.
+Billing webhook handling follows this model: the claim commits first,
+`ProcessBillingWebhookEventService` runs in a fresh billing transaction that
+includes outcome audit recording, and queue completion or failure is recorded
+afterward. Audit failure rolls back billing/webhook state and prevents
+successful handler completion. Job-completion failure after billing commit may
+cause replay; equivalent replay reuses the already committed semantic audit
+fact. ClinicOps does not claim that job completion and billing mutation are
+atomically committed together, and it does not claim exactly-once execution.
 
 ### Failure Classification and Claim Loss
 
@@ -636,6 +643,20 @@ idempotency_key = billing-webhook-process:<webhook_event_id>
 in the same HTTP transaction that persists `BillingWebhookEvent`.
 
 Duplicate provider deliveries reuse one durable event and one semantic job. The public `202 Accepted` response does not expose the job ID. Billing domain tables remain the source of truth; the job row coordinates execution only.
+
+Worker execution builds system audit attribution from durable job context:
+
+```text
+actor type = system
+source = worker
+correlation ID = durable job correlation ID
+request ID = origin request ID when present, otherwise null
+```
+
+Processed and ignored outcomes record one semantic audit fact per webhook event
+and outcome. At-least-once job delivery plus idempotent domain processing plus
+idempotent audit recording remain the supported guarantee. ClinicOps does not
+claim exactly-once execution.
 
 End-to-end HTTP-to-worker processing tests and at-least-once replay-safety tests cover this path. Billing lifecycle details remain in `docs/architecture/billing-lifecycle.md`.
 
@@ -693,6 +714,8 @@ Implemented:
 - atomic billing webhook ingestion and job enqueueing;
 - stable event-derived job idempotency key;
 - duplicate provider delivery reusing one durable event and one semantic job;
+- worker system audit attribution with correlation and origin-request propagation;
+- billing transaction plus audit recording before separate job completion;
 - end-to-end HTTP-to-worker billing processing tests;
 - at-least-once replay safety tests;
 - worker process entrypoint `python -m clinicops.worker`;

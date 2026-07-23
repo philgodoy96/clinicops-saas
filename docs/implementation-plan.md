@@ -53,21 +53,20 @@ Idempotent Webhook Processing
 Billing Reconciliation and Concurrency Protections
 Background Jobs & Worker
 Durable Audit Log Foundation
+Durable Audit Log Integrations
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, and the Durable Audit Log Foundation.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, and Durable Audit Log Integrations.
 
 Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
 
 Background Jobs & Worker is complete. Periodic reconciliation scheduling remains intentionally deferred beyond that milestone.
 
-The Durable Audit Log Foundation is complete. Domain audit emission and the tenant-scoped audit read API remain the next implementation slice.
+Durable Audit Logs are complete, including foundation persistence, domain and worker emission, and the tenant-scoped OWNER/ADMIN read API.
 
 ### Remaining current-release milestones
 
 ```text
-Durable Audit Log Integrations
-    |
 Patients Domain
     |
 Professionals Domain
@@ -75,9 +74,7 @@ Professionals Domain
 Final Hardening & Portfolio Release
 ```
 
-Durable Audit Log Integrations is the active implementation slice.
-
-This documentation-alignment work corrects public project scope. It is not itself a functional milestone.
+Patients Domain is the active implementation slice.
 
 ---
 
@@ -174,60 +171,55 @@ read API.
 - public architecture and security documentation describe the foundation
   boundary.
 
-Domain integrations and the tenant-scoped audit read API remain intentional
-follow-up work.
-
 ---
 
-## 6. Milestone 1 — Durable Audit Log Integrations
+## 6. Completed — Durable Audit Log Integrations
 
 ### Objective
 
 Integrate the Durable Audit Log Foundation into domain workflows and expose
 authorized tenant-scoped audit read access.
 
-### Primary Deliverables
+### Completed slices
 
-- tenant lifecycle audit emission;
-- membership and ownership audit emission;
-- invitation audit emission;
-- billing audit emission;
-- worker-originated audit records;
-- tenant-scoped read API;
-- audit RBAC;
-- public filters and cursor transport;
-- API error mappings for audit queries.
+- action catalog and resource catalog;
+- `AuditRecordingContext` attribution helpers;
+- `AuditRecorder` / `SqlAlchemyAuditRecorder` composition;
+- opaque cursor transport;
+- `ListAuditLogsService` and OWNER/ADMIN read policy;
+- tenant-scoped `GET /api/v1/tenants/{tenant_id}/audit-logs` API;
+- tenancy integrations for create, ownership transfer, role change, and removal;
+- invitation integrations for issue, accept, and revoke;
+- billing lifecycle integrations for create, plan change, and cancellation;
+- worker webhook integrations for processed and ignored outcomes;
+- end-to-end integration, authorization, pagination, rollback, and replay tests;
+- architecture and security documentation.
 
-### Engineering Risks
+### Engineering risks addressed
 
 - critical workflows committing without required audit history;
 - audit emission outside the caller-owned domain transaction;
 - unauthorized cross-tenant audit reads;
 - resource IDs treated as authorization grants;
-- public schemas leaking unsafe metadata;
+- public schemas leaking unsafe metadata or internal idempotency keys;
 - worker replay creating duplicate or conflicting audit rows.
 
-### Test Focus
+### Completion criteria met
 
-- domain mutation and audit persistence in one transaction;
-- rollback coupling for failed auditable workflows;
-- worker-originated idempotent recording;
-- tenant audit isolation;
-- RBAC-enforced read access;
-- public filter and cursor behavior;
-- API error mappings.
-
-### Completion Criteria
-
-- approved domain workflows create durable audit records;
-- tenant audit history can be queried safely through the authorized HTTP API;
-- audit records remain distinct from operational logs;
-- deferred concerns such as export, retention jobs, and platform-wide audit
-  history remain outside this slice.
+- approved domain workflows create durable audit records in the same local
+  transaction as the corresponding mutation;
+- tenant audit history is queryable through the authorized OWNER/ADMIN HTTP API;
+- public invitation acceptance remains system-attributed;
+- worker webhook audit emission remains system-attributed with durable
+  correlation propagation;
+- equivalent idempotent replay reuses one semantic audit fact without claiming
+  exactly-once execution;
+- deferred concerns such as export, retention jobs, metadata search, and
+  platform-wide audit history remain outside this slice.
 
 ---
 
-## 7. Milestone 2 — Patients Domain
+## 7. Milestone 1 — Patients Domain
 
 ### Objective
 
@@ -266,7 +258,7 @@ Implement tenant-owned patient records as operational clinic data, not platform 
 
 ---
 
-## 8. Milestone 3 — Professionals Domain
+## 8. Milestone 2 — Professionals Domain
 
 ### Objective
 
@@ -305,7 +297,7 @@ Implement tenant-owned professional profiles distinct from global Users and Memb
 
 ---
 
-## 9. Milestone 4 — Final Hardening & Portfolio Release
+## 9. Milestone 3 — Final Hardening & Portfolio Release
 
 ### Objective
 
@@ -462,7 +454,7 @@ Roadmap changes should preserve the project's primary goals:
 
 ## 14. Next Milestone
 
-The next implementation milestone is Durable Audit Log Integrations.
+The next implementation milestone is Patients Domain.
 
-Patients Domain, Professionals Domain, and Final Hardening & Portfolio Release
-follow in that order.
+Professionals Domain and Final Hardening & Portfolio Release follow in that
+order.

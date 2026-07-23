@@ -28,11 +28,13 @@ ClinicOps currently has an implemented backend foundation covering:
 - PostgreSQL-backed durable background jobs;
 - worker runtime and billing webhook job execution;
 - Docker Compose services for PostgreSQL, API, and worker;
-- durable tenant-scoped audit-log persistence.
+- durable tenant-scoped audit-log persistence;
+- domain and worker audit emission;
+- tenant-scoped OWNER/ADMIN audit read API.
 
-The Durable Audit Log Foundation is implemented. Domain audit emission and the tenant-scoped audit read API remain deliberate follow-up work. Tenant-owned operational domains also remain under development.
+Durable Audit Logs are complete, including transactionally coupled recording, idempotent worker replay, and authorized tenant-scoped read access. Tenant-owned operational domains remain under development.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active implementation slice is Durable Audit Log Integrations.
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active implementation slice is Patients Domain.
 
 ---
 
@@ -72,6 +74,8 @@ ClinicOps is designed to support:
 - PostgreSQL-backed background jobs;
 - retries with exponential backoff and jitter;
 - durable tenant-scoped append-only audit persistence;
+- domain and worker audit emission with idempotent replay;
+- tenant-scoped OWNER/ADMIN audit history reads;
 - structured application logs;
 - request IDs;
 - correlation IDs;
@@ -310,9 +314,7 @@ Provider-specific payloads are translated before entering the billing domain. Pe
 
 ClinicOps distinguishes business audit records from operational application logs.
 
-The Durable Audit Log Foundation provides tenant-scoped, append-only `AuditLogEntry` persistence with transactionally coupled recording, safe metadata normalization, and optional idempotency keys for at-least-once workflows. Domain services will record audit entries in the same caller-owned transaction as the corresponding business mutation so that audit persistence failure prevents the mutation from committing and rolled-back mutations leave no durable audit row.
-
-Domain audit emission for tenants, memberships, invitations, billing, and workers, together with the tenant-scoped audit read API, remain intentional follow-up work.
+Durable Audit Logs provide tenant-scoped, append-only `AuditLogEntry` persistence with transactionally coupled recording, safe metadata normalization, optional internal idempotency keys for at-least-once workflows, domain and worker emission, and a tenant-scoped OWNER/ADMIN read API. Domain services record audit entries in the same local transaction as the corresponding business mutation so that audit persistence failure prevents the mutation from committing and rolled-back mutations leave no durable audit row. Worker webhook replay reuses equivalent semantic audit facts without claiming exactly-once execution.
 
 Structured application logs already record operational request behavior, including request and correlation identifiers.
 
@@ -407,8 +409,7 @@ Additional architecture documents and ADRs will be added as implementation intro
 - PostgreSQL-backed durable jobs and worker runtime;
 - billing webhook asynchronous processing;
 - retry and dead-job behavior;
-- Durable Audit Log Foundation;
-- Durable Audit Log Integrations;
+- Durable Audit Logs;
 - Patients and Professionals domains;
 - Final Hardening and portfolio release.
 

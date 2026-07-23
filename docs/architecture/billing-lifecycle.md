@@ -175,14 +175,15 @@ The billing module currently owns:
 - atomic processing-job enqueueing for authenticated deliveries;
 - billing webhook event processing;
 - renewal and cancellation event application;
-- provider state-version ordering during processing.
+- provider state-version ordering during processing;
+- durable audit-log emission for subscription creation, plan change,
+  cancellation, and webhook processed or ignored outcomes.
 
 The current billing implementation does not own:
 
 - real payment-provider integrations;
 - entitlement enforcement;
-- periodic reconciliation scheduling;
-- audit-log persistence.
+- periodic reconciliation scheduling.
 
 Those deferred capabilities remain intentional scope decisions for later
 milestones after their security, transaction, failure, and recovery
@@ -1135,6 +1136,7 @@ Transaction B
     -> revalidate provider state ordering
     -> apply or ignore the event
     -> complete the event state
+    -> record processed or ignored audit entry
     -> commit
 ```
 
@@ -1143,8 +1145,8 @@ There are no provider API calls between these transactions.
 The claim is committed independently so another worker can observe that the
 event is already owned.
 
-Subscription mutation and final event completion occur in the same
-Transaction B.
+Subscription mutation, final event completion, and the corresponding audit
+entry occur in the same Transaction B.
 
 This prevents partially committed outcomes such as:
 
@@ -1464,6 +1466,29 @@ event.failure_message = null
 
 It means the event is valid but its state version is stale or already
 reflected locally.
+
+Successful processed and ignored outcomes also record a durable audit entry in
+the same billing transaction:
+
+```text
+billing.webhook.processed
+billing.webhook.ignored
+```
+
+Audit attribution for worker execution is:
+
+```text
+actor type = system
+source = worker
+```
+
+Safe metadata includes the provider event type and processing outcome. Replay
+reuses the existing semantic audit fact through deterministic keys such as:
+
+```text
+billing-webhook-audit:{webhook_event_id}:processed
+billing-webhook-audit:{webhook_event_id}:ignored
+```
 
 ## Processing Failure Classification
 
@@ -2897,6 +2922,25 @@ The current authorization policy grants billing management to tenant owners.
 Administrators have billing read access only, and staff members do not receive
 billing administration permissions.
 
+Successful local subscription persistence records:
+
+```text
+billing.subscription.created
+```
+
+in the same local transaction as the final subscription mutation. Safe metadata
+includes plan and status values such as `starter` and `active`. The audit key
+is deterministic:
+
+```text
+subscription-created:{subscription_id}
+```
+
+Authenticated HTTP user attribution is used. Provider calls remain outside that
+final local auditable commit. ClinicOps does not claim external-provider and
+PostgreSQL distributed atomicity; reconciliation remains the recovery path when
+provider success precedes a later local failure.
+
 ## Implemented Subscription Read API
 
 ClinicOps exposes the current persisted billing subscription for an authorized
@@ -3220,7 +3264,8 @@ Transaction B
     -> persist pending_price_code
     -> persist provider_state_version
     -> mark operation succeeded
-    -> commit
+    -> record billing.subscription.plan_changed
+    -> flush for the route-owned final commit
 ```
 
 The provider result must confirm:
@@ -3232,6 +3277,16 @@ The provider result must confirm:
 
 The local active price and current period remain unchanged after the provider
 confirms the scheduled target.
+
+Safe audit metadata records previous and new plan codes. The audit key reuses
+the client billing idempotency key:
+
+```text
+subscription-plan-changed:{subscription_id}:{client_idempotency_key}
+```
+
+Equivalent client replay reuses the existing semantic audit fact. Provider
+success is not claimed to be transactionally atomic with PostgreSQL.
 
 ## Fake Provider Plan-Change Behavior
 
@@ -3560,7 +3615,8 @@ Transaction B
     -> clear pending_price_code
     -> persist provider_state_version
     -> mark operation succeeded
-    -> commit
+    -> record billing.subscription.cancelled
+    -> flush for the route-owned final commit
 ```
 
 The provider result must confirm:
@@ -3574,6 +3630,18 @@ future effective cancellation date for this command boundary.
 
 ClinicOps does not copy that field into the local `Subscription.canceled_at`
 column during scheduling.
+
+Safe audit metadata records previous and new status values, using the persisted
+status spelling `canceled` for the new status. The audit action remains
+`billing.subscription.cancelled`. The audit key reuses the client billing
+idempotency key:
+
+```text
+subscription-cancelled:{subscription_id}:{client_idempotency_key}
+```
+
+Equivalent client replay reuses the existing semantic audit fact. Provider
+success is not claimed to be transactionally atomic with PostgreSQL.
 
 ## Fake Provider Cancellation Behavior
 

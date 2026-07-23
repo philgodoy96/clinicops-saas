@@ -13,20 +13,25 @@ Audit logs answer historical questions such as:
 - Which request or asynchronous workflow produced the change?
 - When was the historical fact committed?
 
-Audit logs are persisted in PostgreSQL and participate in the same transaction as the corresponding domain mutation.
+Audit logs are persisted in PostgreSQL and participate in the same local transaction as the corresponding domain mutation.
 
 ```text
-domain mutation
-    -> append audit entry
+authorize and validate
+    -> mutate domain state
     -> flush
-    -> caller commit
+    -> record audit entry using the same SQLAlchemy Session
+    -> route commits once
 ```
 
-The transaction either commits both the business state and the audit entry or commits neither.
+The local transaction either commits both the business state and the audit entry or commits neither.
+
+ClinicOps does not claim distributed atomicity between PostgreSQL and external payment providers. Where provider success can precede a later local failure, the project retains its existing reconciliation trade-off.
 
 ## Implementation Status
 
-The durable audit-log foundation currently includes:
+Durable Audit Logs are fully implemented for the approved current-release boundary.
+
+The milestone includes:
 
 - tenant-scoped `AuditLogEntry` persistence;
 - PostgreSQL migration `0009`;
@@ -35,18 +40,23 @@ The durable audit-log foundation currently includes:
 - database-enforced actor consistency;
 - bounded and deterministic JSON metadata normalization;
 - explicit metadata versioning;
+- domain audit emission for tenancy, invitations, and billing;
+- worker-originated billing webhook audit emission;
 - idempotent recording;
 - semantic replay conflict detection;
 - insert-only repository behavior;
-- caller-owned transaction boundaries;
+- caller-owned transaction boundaries for ordinary HTTP mutations;
 - rollback coupling with domain mutations;
 - tenant-scoped lookup;
 - cursor-based tenant timeline queries;
 - action and resource filters;
-- concurrency and rollback integration tests;
+- opaque cursor transport;
+- tenant-scoped OWNER/ADMIN read API;
+- audit read authorization;
+- safe public response contracts;
+- Problem Details error mapping;
+- concurrency, rollback, authorization, pagination, and integration tests;
 - application-surface append-only behavior.
-
-Domain integrations and the tenant-facing read API are intentionally implemented in a separate slice.
 
 ## Audit Logs and Operational Logs
 
@@ -81,7 +91,7 @@ Audit logs describe committed historical facts:
 
 Audit entries are not created merely because an operation was attempted. They represent state changes that reached the transaction boundary successfully.
 
-Denied operations and validation failures remain operational or security log concerns unless a dedicated security-event model is introduced later.
+Denied operations, validation failures, and no-op outcomes do not emit misleading historical facts. Those remain operational or security log concerns unless a dedicated security-event model is introduced later.
 
 ## Architectural Boundary
 
@@ -97,13 +107,17 @@ The audit module owns:
 - durable persistence;
 - idempotent recording;
 - semantic replay comparison;
-- tenant-scoped retrieval primitives;
-- stable cursor ordering.
+- recording context helpers;
+- `AuditRecorder` / `SqlAlchemyAuditRecorder` composition;
+- tenant-scoped retrieval;
+- opaque cursor encode and decode;
+- read authorization policy for audit history;
+- public read response schemas.
 
 The audit module does not own:
 
-- tenant authorization;
-- role-based access control;
+- tenant authorization for domain mutations;
+- role-based access control for non-audit resources;
 - domain state transitions;
 - application logging;
 - metrics;
@@ -133,20 +147,36 @@ runtime caller
     -> commits or rolls back
 ```
 
-A future domain integration follows this pattern:
+Implemented domain mutation flow:
 
 ```text
-domain service
-    -> validate operation
+authorize and validate
     -> mutate domain state
-    -> record audit entry
     -> flush
-
-HTTP route or worker transaction
-    -> commit once
+    -> record audit entry using the same SQLAlchemy Session
+    -> route commits once
 ```
 
-This design prevents a domain mutation from being committed without its required audit entry.
+Domain recording uses:
+
+```text
+AuditRecordingContext
+AuditRecorder
+SqlAlchemyAuditRecorder
+RecordAuditLogService
+```
+
+### Guarantees
+
+- successful domain state and audit history commit together in the same local transaction;
+- audit persistence failure prevents the corresponding local domain commit;
+- caller rollback removes both pending domain changes and audit entries;
+- tenancy and invitation services do not commit or roll back;
+- authenticated billing services may own intermediate commits for provider orchestration, but leave the final local subscription mutation and audit entry for the HTTP route to commit;
+- mutation routes remain transaction owners for the final auditable state;
+- rejected and no-op operations do not emit misleading historical facts.
+
+Billing webhook processing records the outcome audit entry inside the billing/webhook transaction before that transaction commits. Job completion remains a separate queue transaction.
 
 ### Successful transaction
 
@@ -219,7 +249,7 @@ Every audit entry belongs to exactly one tenant.
 
 `tenant_id` is required for persistence and for every repository read primitive.
 
-The current foundation does not support global or platform-wide audit entries.
+There is no global or platform-wide audit history.
 
 ### Actor attribution
 
@@ -271,37 +301,55 @@ source = worker
 
 represents an automated operation executed by a background worker.
 
-### Actions
+## Implemented Action Catalog
 
-Actions are stable bounded strings such as:
+Actions are stable application strings rather than PostgreSQL enum values.
+
+The implemented catalog is:
 
 ```text
 tenant.created
 tenant.ownership_transferred
+
 membership.role_changed
+membership.removed
+
+invitation.created
 invitation.accepted
+invitation.revoked
+
+billing.subscription.created
+billing.subscription.plan_changed
 billing.subscription.cancelled
+
 billing.webhook.processed
+billing.webhook.ignored
 ```
 
-Actions are application identifiers rather than PostgreSQL enum values.
+New audited domain operations can be introduced without requiring an enum migration for every action.
 
-This allows new audited domain operations to be introduced without requiring an enum migration for every action.
+## Implemented Resource Catalog
 
-### Resource attribution
+Stable resource types are:
 
-Each entry contains:
+```text
+tenant
+membership
+invitation
+subscription
+billing_webhook_event
+```
+
+Each entry stores:
 
 ```text
 resource_type
 resource_id
 ```
 
-`resource_id` is stored as a bounded string.
+`resource_id` is a bounded string historical reference. Preferred values are durable local resource identifiers.
 
-The preferred value is a durable local resource identifier.
-
-Resource identifiers are historical references. They do not grant authorization and must never be used as a substitute for tenant-scoped access checks.
+Resource identifiers do not grant authorization and must never substitute for tenant-scoped access checks.
 
 ### Timestamp
 
@@ -309,27 +357,58 @@ Resource identifiers are historical references. They do not grant authorization 
 
 Database time is authoritative for persisted ordering.
 
+## Actor Attribution by Runtime
+
+### Authenticated HTTP operations
+
+Trusted runtime attribution for authenticated tenant mutations:
+
+```text
+actor type = user
+actor user ID = authenticated/authorized principal
+actor role = trusted tenant-role snapshot
+source = http
+```
+
+Role values are persisted as historical lowercase tenant-role strings such as `owner`, `admin`, and `staff`.
+
+The role snapshot is historical context only.
+
+### Public invitation acceptance
+
+Public capability-token acceptance is not an authenticated user request.
+
+```text
+actor type = system
+actor user ID = null
+actor role = null
+source = http
+```
+
+The accepted user ID and role are stored only in approved safe metadata.
+
+The invitation token does not prove an authenticated user actor.
+
+### Billing webhook worker
+
+Worker-originated billing webhook processing uses:
+
+```text
+actor type = system
+actor user ID = null
+actor role = null
+source = worker
+```
+
+Trace context is propagated from durable job context:
+
+- correlation ID from the durable job;
+- originating request ID when available;
+- `null` request ID when no originating request exists.
+
 ## Metadata
 
 Audit metadata contains explicit, safe context required to explain the historical transition.
-
-Examples:
-
-```json
-{
-  "previous_role": "STAFF",
-  "new_role": "ADMIN"
-}
-```
-
-```json
-{
-  "previous_plan": "starter",
-  "new_plan": "growth"
-}
-```
-
-Metadata does not contain full domain snapshots.
 
 The PostgreSQL column is named:
 
@@ -344,6 +423,81 @@ event_metadata
 ```
 
 This avoids collision with SQLAlchemy declarative metadata.
+
+### Implemented safe metadata shapes
+
+```json
+{
+  "tenant_name": "Northstar Health Clinic"
+}
+```
+
+```json
+{
+  "target_user_id": "uuid",
+  "previous_role": "staff",
+  "new_role": "admin"
+}
+```
+
+```json
+{
+  "target_user_id": "uuid",
+  "removed_role": "staff"
+}
+```
+
+```json
+{
+  "previous_owner_user_id": "uuid",
+  "new_owner_user_id": "uuid"
+}
+```
+
+```json
+{
+  "invited_role": "admin"
+}
+```
+
+```json
+{
+  "accepted_user_id": "uuid",
+  "accepted_role": "admin"
+}
+```
+
+```json
+{
+  "plan": "starter",
+  "status": "active"
+}
+```
+
+```json
+{
+  "previous_plan": "starter",
+  "new_plan": "professional"
+}
+```
+
+```json
+{
+  "previous_status": "active",
+  "new_status": "canceled"
+}
+```
+
+```json
+{
+  "event_type": "subscription.updated",
+  "processing_outcome": "processed"
+}
+```
+
+Subscription status values use the persisted enum spelling `canceled`. The audit action name remains `billing.subscription.cancelled`.
+
+Metadata does not contain full domain snapshots.
 
 ## Metadata Validation
 
@@ -377,7 +531,7 @@ Callers must explicitly convert durable identifiers to strings.
 
 ### Structural limits
 
-The initial metadata policy enforces:
+The metadata policy enforces:
 
 ```text
 maximum nesting depth:       6
@@ -392,22 +546,22 @@ Objects are normalized deterministically before persistence and semantic compari
 
 ### Prohibited content
 
-Audit metadata must not contain:
+Audit metadata intentionally excludes:
 
-- passwords;
-- password hashes;
-- access tokens;
-- refresh tokens;
-- session tokens;
-- provider credentials;
-- webhook secrets;
-- webhook signatures;
+- passwords and password hashes;
+- access and session tokens;
+- invitation tokens and token hashes;
 - authorization headers;
-- raw request bodies;
+- webhook signatures;
+- raw HTTP request bodies;
 - raw webhook payloads;
-- payment credentials;
+- provider credentials and secrets;
+- payment data;
+- provider response snapshots;
 - exception tracebacks;
-- arbitrary ORM objects.
+- ORM objects;
+- arbitrary full entity snapshots;
+- internal audit idempotency keys.
 
 The audit service enforces structural safety and JSON compatibility.
 
@@ -420,6 +574,14 @@ Audit entries are recorded through:
 ```text
 RecordAuditLogService
 ```
+
+Runtime callers typically compose recording through:
+
+```text
+SqlAlchemyAuditRecorder
+```
+
+which implements the `AuditRecorder` protocol and builds `RecordAuditLogService` against the caller's `Session`.
 
 The service receives an immutable `RecordAuditLogCommand` containing:
 
@@ -450,9 +612,77 @@ The service:
 
 The service never commits or rolls back.
 
-## Idempotency
+## Domain Integration Flows
 
-`idempotency_key` is optional.
+### Tenancy
+
+Implemented emissions:
+
+- `tenant.created` when a tenant is created;
+- `tenant.ownership_transferred` after ownership transfer;
+- `membership.role_changed` when a membership role actually changes;
+- `membership.removed` when a membership is removed.
+
+Authenticated HTTP routes supply `AuditRecordingContext.http_user(...)`.
+
+No-op role assignments that leave the role unchanged do not emit an audit entry.
+
+### Invitations
+
+Implemented emissions:
+
+- `invitation.created`;
+- `invitation.accepted`;
+- `invitation.revoked`.
+
+Issue and revoke use authenticated HTTP user attribution.
+
+Acceptance uses the public HTTP system actor contract described above.
+
+### Authenticated billing lifecycle
+
+Implemented emissions:
+
+- `billing.subscription.created`;
+- `billing.subscription.plan_changed`;
+- `billing.subscription.cancelled`.
+
+These records use authenticated HTTP user attribution and safe plan or status metadata.
+
+Provider calls remain outside the final local auditable commit. ClinicOps does not claim external-provider and PostgreSQL distributed atomicity. Reconciliation remains the recovery path when provider success precedes a later local failure.
+
+### Worker webhook outcomes
+
+Implemented emissions:
+
+- `billing.webhook.processed`;
+- `billing.webhook.ignored`.
+
+These records use worker system attribution and include safe `event_type` and `processing_outcome` metadata.
+
+## Idempotency and Replay
+
+`idempotency_key` is optional and internal.
+
+It is persisted for replay protection and is not part of the public audit read response.
+
+### Deterministic keys currently used
+
+```text
+tenant-created:{tenant_id}
+invitation-created:{invitation_id}
+invitation-accepted:{invitation_id}
+invitation-revoked:{invitation_id}
+subscription-created:{subscription_id}
+subscription-plan-changed:{subscription_id}:{client_idempotency_key}
+subscription-cancelled:{subscription_id}:{client_idempotency_key}
+billing-webhook-audit:{webhook_event_id}:processed
+billing-webhook-audit:{webhook_event_id}:ignored
+```
+
+Role changes, membership removal, and ownership transfer intentionally omit synthetic audit keys because those domain operations have no durable operation identifier suitable for semantic replay reuse.
+
+Plan change and cancellation derive audit keys from the subscription identifier plus the client billing idempotency key already used for provider-operation replay protection.
 
 ### Entry without an idempotency key
 
@@ -513,6 +743,8 @@ When the same key refers to a different semantic event:
 raise AuditLogIdempotencyConflictError
 ```
 
+Semantic conflict for the same idempotency key is not silently ignored.
+
 The caller transaction remains responsible for rollback.
 
 ### Concurrent recording
@@ -529,7 +761,43 @@ Concurrent equivalent writers resolve one durable entry.
 
 Concurrent conflicting writers produce one winner and one semantic conflict.
 
-Idempotency supports at-least-once workflows. It does not provide an exactly-once execution guarantee.
+### Supported worker guarantee
+
+ClinicOps does not claim exactly-once execution.
+
+The supported worker guarantee is:
+
+```text
+at-least-once job delivery
+    + idempotent domain processing
+    + idempotent audit recording
+```
+
+Equivalent replay reuses the existing audit fact.
+
+## Billing Webhook Transaction Boundary
+
+Billing webhook job execution uses this boundary:
+
+```text
+job claimed
+    -> billing transaction opens
+    -> billing/webhook state changes
+    -> audit entry recorded
+    -> billing transaction commits
+    -> handler returns
+    -> job completion persists separately
+```
+
+Consequences:
+
+- audit failure rolls back billing/webhook state and prevents successful handler completion;
+- existing job retry behavior remains active;
+- job-completion failure after billing commit may cause replay;
+- replay reuses the already committed semantic audit fact;
+- job completion remains intentionally separate from the billing transaction.
+
+ClinicOps does not claim that job completion and billing mutation are atomically committed together.
 
 ## Append-Only Application Surface
 
@@ -542,6 +810,8 @@ The audit module intentionally exposes no application operation for:
 - changing actor attribution;
 - changing the timestamp;
 - deleting an entry.
+
+There is no public audit-write endpoint.
 
 The repository exposes no:
 
@@ -568,20 +838,66 @@ A database superuser can still execute direct SQL modifications. Production hard
 
 That deployment permission model is intentionally separate from the application migration.
 
-## Tenant-Scoped Queries
+## Tenant-Scoped Read API
 
-The foundation provides safe repository primitives for a future HTTP read API.
-
-Supported operations include:
+Implemented endpoint:
 
 ```text
-get_by_id_for_tenant
-list_page_for_tenant
+GET /api/v1/tenants/{tenant_id}/audit-logs
 ```
 
-Every operation requires `tenant_id`.
+There is no global audit endpoint.
 
-There is no unscoped repository query.
+### Authorization
+
+```text
+OWNER -> allowed
+ADMIN -> allowed
+STAFF -> denied
+```
+
+The request must remain:
+
+- authenticated;
+- tenant-scoped;
+- membership-scoped;
+- permission-checked through `audit_log:read`.
+
+Authorization starts from the authorized tenant ID in the request path. Resource IDs and actor-role snapshots never bypass that check.
+
+### Query parameters
+
+```text
+limit
+cursor
+action
+resource_type
+resource_id
+```
+
+Constraints:
+
+```text
+default limit = 50
+1 <= limit <= 100
+resource_id requires resource_type
+```
+
+### Opaque cursor transport
+
+The cursor is URL-safe Base64 transport over a small JSON payload containing:
+
+```text
+recorded_at
+audit_log_id
+```
+
+Clarify:
+
+- the cursor is not an authorization credential;
+- tenant scope is always taken from the authorized request;
+- the token is not encrypted or signed because it contains pagination position rather than secret data;
+- malformed cursors return a client-safe Problem Details response.
 
 ### Stable ordering
 
@@ -593,15 +909,6 @@ id DESC
 ```
 
 The UUID tie-breaker provides stable ordering when multiple entries share the same database timestamp.
-
-### Cursor pagination
-
-The cursor contains:
-
-```text
-recorded_at
-audit_log_id
-```
 
 The next-page predicate is:
 
@@ -616,13 +923,11 @@ OR
 
 The repository fetches one additional row to determine whether another page exists.
 
-Page limits are bounded from 1 through 100.
-
 Offset pagination is intentionally not used for potentially large tenant histories.
 
 ### Filters
 
-The repository supports optional filtering by:
+The API and repository support optional filtering by:
 
 - action;
 - resource type;
@@ -630,7 +935,7 @@ The repository supports optional filtering by:
 
 A resource ID filter requires a resource type.
 
-Arbitrary JSON metadata filtering is not currently supported.
+Arbitrary JSON metadata filtering, actor filtering, and date-range filtering are not currently supported.
 
 A metadata GIN index is intentionally deferred until measured query requirements justify it.
 
@@ -639,6 +944,73 @@ A metadata GIN index is intentionally deferred until measured query requirements
 Read operations return immutable application records rather than mutable SQLAlchemy entities.
 
 Metadata is copied before returning so consumers cannot mutate the ORM JSON structure through a returned record.
+
+## Public Response Contract
+
+Example response:
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "tenant_id": "uuid",
+      "actor": {
+        "type": "user",
+        "user_id": "uuid",
+        "role": "admin"
+      },
+      "source": "http",
+      "action": "membership.role_changed",
+      "resource": {
+        "type": "membership",
+        "id": "uuid"
+      },
+      "metadata_version": 1,
+      "metadata": {
+        "previous_role": "staff",
+        "new_role": "admin",
+        "target_user_id": "uuid"
+      },
+      "request_id": "request-id",
+      "correlation_id": "correlation-id",
+      "recorded_at": "ISO-8601 timestamp"
+    }
+  ],
+  "next_cursor": null
+}
+```
+
+Serialized enum fields such as `actor.type` and `source` use lowercase values.
+
+`idempotency_key` is not part of the public response.
+
+## Problem Details
+
+Audit API errors use:
+
+```text
+application/problem+json
+```
+
+Responses preserve:
+
+- stable error code;
+- client-safe public detail;
+- request ID;
+- correlation ID;
+- trace response headers.
+
+Status mapping:
+
+```text
+invalid cursor or query configuration -> HTTP 400
+request-shape validation such as out-of-range limit -> HTTP 422
+access denial -> HTTP 403
+unauthenticated request -> HTTP 401
+```
+
+Internal cursor parsing or persistence diagnostics must not be exposed.
 
 ## Database Constraints and Indexes
 
@@ -749,28 +1121,34 @@ The current design avoids premature:
 - separate audit storage;
 - event-stream infrastructure.
 
-PostgreSQL remains appropriate for the current architecture because audit persistence must participate in the same transaction as domain mutations.
+PostgreSQL remains appropriate for the current architecture because audit persistence must participate in the same local transaction as domain mutations.
 
 ## Security Properties
 
-The foundation enforces:
+The implemented milestone enforces:
 
 - mandatory tenant ownership;
 - explicit actor attribution;
+- trusted HTTP user attribution for authenticated mutations;
+- system attribution for public invitation acceptance;
+- system attribution for worker webhook processing;
 - consistent system and user actor combinations;
 - bounded identifiers;
 - safe JSON-native metadata;
-- no implicit object serialization;
-- no raw payload storage;
+- no secret or raw payload storage;
+- internal-only idempotency keys;
 - no public mutation API;
 - no unscoped query primitive;
+- OWNER/ADMIN read authorization with STAFF denial;
 - correlation and request traceability;
 - conflict-safe idempotency;
-- foreign-key preservation of actor and tenant attribution.
+- foreign-key preservation of actor and tenant attribution;
+- application-surface append-only behavior;
+- runtime database-role hardening as deployment guidance.
 
-Authorization for reading audit history belongs to the future HTTP integration.
+Repository tenant scope does not replace API authentication, membership validation, or RBAC.
 
-Repository tenant scope does not replace API authorization, membership validation, or RBAC.
+A database superuser remains outside the application-level append-only guarantee.
 
 ## Current Implementation Boundary
 
@@ -779,35 +1157,40 @@ Implemented:
 - durable audit persistence;
 - actor and source contracts;
 - metadata normalization;
+- domain audit emission;
+- worker-originated audit emission;
 - idempotent recording;
 - conflict detection;
 - transaction-safe recording;
 - tenant-scoped lookup;
-- cursor pagination;
+- opaque cursor transport;
+- tenant-scoped OWNER/ADMIN read API;
+- public response schemas that omit `idempotency_key`;
+- Problem Details mappings;
 - action and resource filters;
 - concurrency tests;
 - rollback tests;
 - tenant-isolation tests;
+- authorization and pagination API tests;
+- domain and worker integration tests;
 - append-only application surface.
 
-Intentionally deferred to the audit integration slice:
+Intentionally deferred beyond the current release:
 
-- tenant lifecycle audit emission;
-- membership and ownership audit emission;
-- invitation audit emission;
-- billing audit emission;
-- worker-originated audit emission;
-- tenant-scoped HTTP read API;
-- audit RBAC;
-- public filter and cursor schemas;
-- transport error mappings.
-
-Intentionally deferred beyond the integration slice:
-
-- export;
-- retention automation;
-- platform-wide audit history;
+- audit mutation endpoints;
+- global or platform-wide audit API;
+- audit export or CSV download;
+- retention jobs and archival workflows;
+- tenant-configurable retention;
+- metadata search;
+- actor filter;
+- date-range filter;
+- platform-administrator audit view;
 - security-attempt event persistence;
 - table partitioning;
-- arbitrary metadata queries;
-- frontend audit controls.
+- metadata GIN index;
+- frontend audit screens;
+- Patients audit integration;
+- Professionals audit integration.
+
+These remain deliberate engineering boundaries rather than incomplete foundation work.
