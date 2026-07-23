@@ -1,17 +1,26 @@
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from clinicops.api.v1.audit_logs import (
+    get_audit_log_tenant_context,
+)
 from clinicops.audit.actions import AuditAction, AuditResourceType
 from clinicops.audit.context import AuditRecordingContext
 from clinicops.audit.contracts import RecordAuditLogCommand, RecordedAuditLog
 from clinicops.audit.enums import AuditSource
 from clinicops.audit.models import AuditLogEntry
+from clinicops.authorization.permissions import TenantPermission
+from clinicops.authorization.services.require_permission import (
+    AuthorizedTenantContext,
+)
 from clinicops.billing.enums import (
     BillingInterval,
     BillingPlan,
@@ -51,6 +60,7 @@ from clinicops.billing.services.schedule_cancellation import (
 )
 from clinicops.db.session import get_engine
 from clinicops.identity.models import User, UserStatus
+from clinicops.main import create_app
 from clinicops.tenancy.models import Tenant, TenantRole
 
 PERIOD_START = datetime(
@@ -343,6 +353,55 @@ def _count_audit_rows(
         return int(session.scalar(query) or 0)
 
 
+@contextmanager
+def _audit_read_client(
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+) -> Iterator[TestClient]:
+    application = create_app()
+    application.dependency_overrides[get_audit_log_tenant_context] = lambda: (
+        AuthorizedTenantContext(
+            user_id=user_id,
+            session_id=uuid4(),
+            tenant_id=tenant_id,
+            membership_id=uuid4(),
+            role=TenantRole.OWNER,
+            granted_permission=TenantPermission.AUDIT_LOG_READ,
+        )
+    )
+
+    try:
+        with TestClient(
+            application,
+            raise_server_exceptions=False,
+        ) as client:
+            yield client
+    finally:
+        application.dependency_overrides.clear()
+
+
+def _audit_api_items_for_action(
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    action: str,
+) -> list[dict[str, object]]:
+    with _audit_read_client(
+        tenant_id=tenant_id,
+        user_id=user_id,
+    ) as client:
+        response = client.get(
+            f"/api/v1/tenants/{tenant_id}/audit-logs",
+            params={"action": action},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "idempotency_key" not in body
+    return list(body["items"])
+
+
 def test_cancellation_persists_pending_state_and_operation(
     cancellation_fixture: PersistedCancellationFixture,
 ) -> None:
@@ -599,6 +658,14 @@ def test_cancellation_caller_rollback_discards_pending_state_and_audit(
         )
         == 0
     )
+    assert (
+        _audit_api_items_for_action(
+            tenant_id=cancellation_fixture.tenant_id,
+            user_id=cancellation_fixture.audit_user_id,
+            action=AuditAction.BILLING_SUBSCRIPTION_CANCELLED.value,
+        )
+        == []
+    )
 
 
 def test_audit_failure_prevents_cancellation_commit(
@@ -635,6 +702,14 @@ def test_audit_failure_prevents_cancellation_commit(
             action=AuditAction.BILLING_SUBSCRIPTION_CANCELLED.value,
         )
         == 0
+    )
+    assert (
+        _audit_api_items_for_action(
+            tenant_id=cancellation_fixture.tenant_id,
+            user_id=cancellation_fixture.audit_user_id,
+            action=AuditAction.BILLING_SUBSCRIPTION_CANCELLED.value,
+        )
+        == []
     )
 
 

@@ -10,6 +10,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from clinicops.api.errors import PROBLEM_MEDIA_TYPE
+from clinicops.audit.enums import (
+    AuditActorType,
+    AuditSource,
+)
 from clinicops.audit.models import AuditLogEntry
 from clinicops.authentication.models import AuthSession
 from clinicops.db.session import get_engine
@@ -177,6 +181,40 @@ class TenantApiDataFactory:
 
         membership.role = role
         self._session.commit()
+
+    def persist_audit_entry(
+        self,
+        *,
+        tenant_id: UUID,
+        action: str = "tenant.created",
+        resource_type: str = "tenant",
+        resource_id: str | None = None,
+    ) -> AuditLogEntry:
+        entry = AuditLogEntry(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.SYSTEM.value,
+            actor_user_id=None,
+            actor_role=None,
+            source=AuditSource.SYSTEM.value,
+            action=action,
+            resource_type=resource_type,
+            resource_id=(resource_id if resource_id is not None else str(tenant_id)),
+            metadata_version=1,
+            event_metadata={
+                "origin": "isolation-test",
+            },
+            idempotency_key=(f"isolation-audit:{uuid4()}"),
+            request_id=None,
+            correlation_id=f"correlation-{uuid4()}",
+            recorded_at=datetime.now(UTC),
+        )
+        self._session.add(entry)
+        self._session.commit()
+        self._session.refresh(entry)
+        self._session.expunge(entry)
+
+        return entry
 
     def count_invitations(
         self,
@@ -578,3 +616,90 @@ def test_invitation_body_cannot_override_path_tenant(
     )
     assert tenant_api_data_factory.count_invitations(path_tenant.tenant_id) == 0
     assert tenant_api_data_factory.count_invitations(foreign_tenant.tenant_id) == 0
+
+
+def test_audit_log_authorization_and_tenant_isolation(
+    client: TestClient,
+    tenant_api_data_factory: TenantApiDataFactory,
+) -> None:
+    owner = tenant_api_data_factory.create_user(email_prefix="audit-auth-owner")
+    admin = tenant_api_data_factory.create_user(email_prefix="audit-auth-admin")
+    staff = tenant_api_data_factory.create_user(email_prefix="audit-auth-staff")
+    foreign_owner = tenant_api_data_factory.create_user(email_prefix="audit-auth-foreign")
+
+    tenant = tenant_api_data_factory.create_tenant(
+        owner=owner,
+        name="Audit Auth Clinic",
+    )
+    foreign_tenant = tenant_api_data_factory.create_tenant(
+        owner=foreign_owner,
+        name="Foreign Audit Clinic",
+    )
+    tenant_api_data_factory.add_membership(
+        tenant_id=tenant.tenant_id,
+        user=admin,
+        role=TenantRole.ADMIN,
+    )
+    tenant_api_data_factory.add_membership(
+        tenant_id=tenant.tenant_id,
+        user=staff,
+        role=TenantRole.STAFF,
+    )
+
+    owned_entry = tenant_api_data_factory.persist_audit_entry(
+        tenant_id=tenant.tenant_id,
+        action="membership.role_changed",
+        resource_type="membership",
+        resource_id=str(uuid4()),
+    )
+    foreign_entry = tenant_api_data_factory.persist_audit_entry(
+        tenant_id=foreign_tenant.tenant_id,
+        action="invitation.created",
+        resource_type="invitation",
+        resource_id=str(uuid4()),
+    )
+
+    owner_headers = login_headers(client, owner)
+    admin_headers = login_headers(client, admin)
+    staff_headers = login_headers(client, staff)
+    foreign_headers = login_headers(client, foreign_owner)
+    audit_path = f"/api/v1/tenants/{tenant.tenant_id}/audit-logs"
+
+    owner_response = client.get(
+        audit_path,
+        headers=owner_headers,
+    )
+    admin_response = client.get(
+        audit_path,
+        headers=admin_headers,
+    )
+    staff_response = client.get(
+        audit_path,
+        headers=staff_headers,
+    )
+    foreign_response = client.get(
+        audit_path,
+        headers=foreign_headers,
+    )
+
+    assert owner_response.status_code == 200
+    assert admin_response.status_code == 200
+
+    owner_body = owner_response.json()
+    admin_body = admin_response.json()
+
+    assert {item["id"] for item in owner_body["items"]} == {str(owned_entry.id)}
+    assert {item["id"] for item in admin_body["items"]} == {str(owned_entry.id)}
+    assert str(foreign_entry.id) not in owner_response.text
+    assert str(foreign_entry.id) not in admin_response.text
+    assert "idempotency_key" not in owner_body
+    assert "idempotency_key" not in owner_body["items"][0]
+
+    assert_problem(
+        staff_response,
+        status_code=403,
+        code="tenant_permission_denied",
+    )
+    assert staff_response.status_code == 403
+    assert foreign_response.status_code == 404
+    assert foreign_response.headers["content-type"] == PROBLEM_MEDIA_TYPE
