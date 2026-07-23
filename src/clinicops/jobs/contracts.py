@@ -92,6 +92,17 @@ class FailedBackgroundJob:
     dead_lettered_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class RecoverStaleBackgroundJobsCommand:
+    batch_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredBackgroundJobs:
+    recovered_for_retry: tuple[UUID, ...]
+    dead_lettered: tuple[UUID, ...]
+
+
 __all__ = [
     "ClaimBackgroundJobsCommand",
     "ClaimedBackgroundJob",
@@ -104,4 +115,6 @@ __all__ = [
     "JSONObject",
     "JSONScalar",
     "JSONValue",
+    "RecoverStaleBackgroundJobsCommand",
+    "RecoveredBackgroundJobs",
 ]

@@ -125,6 +125,30 @@ class BackgroundJobRepository:
 
         return list(self._session.scalars(statement).all())
 
+    def find_stale_for_update_skip_locked(
+        self,
+        *,
+        batch_size: int,
+        stale_before: datetime,
+    ) -> list[BackgroundJob]:
+        statement = (
+            select(BackgroundJob)
+            .where(
+                BackgroundJob.status == BackgroundJobStatus.PROCESSING,
+                BackgroundJob.lease_expires_at.is_not(None),
+                BackgroundJob.lease_expires_at <= stale_before,
+            )
+            .order_by(
+                BackgroundJob.lease_expires_at.asc(),
+                BackgroundJob.created_at.asc(),
+                BackgroundJob.id.asc(),
+            )
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+
+        return list(self._session.execute(statement).scalars().all())
+
     def get_by_id_for_update(
         self,
         job_id: UUID,
