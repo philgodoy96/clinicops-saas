@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,10 +9,16 @@ from sqlalchemy.orm import Session
 
 from clinicops.db.session import get_engine
 from clinicops.jobs.contracts import (
+    ClaimBackgroundJobsCommand,
     CompleteBackgroundJobCommand,
+    FailBackgroundJobCommand,
+    RecoveredBackgroundJobs,
     RecoverStaleBackgroundJobsCommand,
 )
-from clinicops.jobs.enums import BackgroundJobStatus
+from clinicops.jobs.enums import (
+    BackgroundJobFailureKind,
+    BackgroundJobStatus,
+)
 from clinicops.jobs.exceptions import (
     BackgroundJobInvalidTransitionError,
 )
@@ -21,8 +27,14 @@ from clinicops.jobs.repositories.background_job_repository import (
     BackgroundJobRepository,
 )
 from clinicops.jobs.retry import BackgroundJobRetryPolicy
+from clinicops.jobs.services.claim_background_jobs import (
+    ClaimBackgroundJobsService,
+)
 from clinicops.jobs.services.complete_background_job import (
     CompleteBackgroundJobService,
+)
+from clinicops.jobs.services.fail_background_job import (
+    FailBackgroundJobService,
 )
 from clinicops.jobs.services.recover_stale_background_jobs import (
     RecoverStaleBackgroundJobsService,
@@ -220,6 +232,221 @@ def test_recovery_rollback_preserves_processing_claim() -> None:
             assert persisted.claim_token == original_claim_token
             assert persisted.claimed_at is not None
             assert persisted.lease_expires_at is not None
+    finally:
+        with Session(engine) as cleanup_session:
+            cleanup_session.execute(delete(BackgroundJob).where(BackgroundJob.id == job_id))
+            cleanup_session.commit()
+
+
+def test_claim_does_not_observe_uncommitted_stale_recovery() -> None:
+    engine = get_engine()
+    job = _processing_job()
+    job.priority = 1_000_000
+    recovery_flushed = Event()
+    release_recovery = Event()
+
+    with Session(engine) as seed_session:
+        seed_session.add(job)
+        seed_session.commit()
+
+        job_id = job.id
+        old_worker_id = job.worker_id
+        old_claim_token = job.claim_token
+
+    assert old_worker_id is not None
+    assert old_claim_token is not None
+
+    def recover() -> RecoveredBackgroundJobs:
+        with Session(engine) as session:
+            result = _recovery_service(session).execute(
+                RecoverStaleBackgroundJobsCommand(
+                    batch_size=1,
+                )
+            )
+
+            assert result.recovered_for_retry == (job_id,)
+            recovery_flushed.set()
+            assert release_recovery.wait(timeout=10)
+            session.commit()
+
+            return result
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            recovery_future = executor.submit(recover)
+
+            assert recovery_flushed.wait(timeout=10)
+
+            with Session(engine) as claim_session:
+                claims_during_recovery = ClaimBackgroundJobsService(
+                    BackgroundJobRepository(claim_session)
+                ).execute(
+                    ClaimBackgroundJobsCommand(
+                        worker_id="worker-during-recovery",
+                        batch_size=1,
+                        lease_duration=timedelta(minutes=5),
+                    )
+                )
+                claim_session.commit()
+
+            assert claims_during_recovery == ()
+
+            release_recovery.set()
+            recovery_result = recovery_future.result(timeout=20)
+
+        assert recovery_result.recovered_for_retry == (job_id,)
+
+        with Session(engine) as availability_session:
+            recovered = availability_session.get(
+                BackgroundJob,
+                job_id,
+            )
+
+            assert recovered is not None
+            assert recovered.status is BackgroundJobStatus.RETRY_SCHEDULED
+
+            recovered.available_at = datetime.now(UTC) - timedelta(seconds=1)
+            availability_session.commit()
+
+        with Session(engine) as claim_session:
+            claims_after_recovery = ClaimBackgroundJobsService(
+                BackgroundJobRepository(claim_session)
+            ).execute(
+                ClaimBackgroundJobsCommand(
+                    worker_id="worker-after-recovery",
+                    batch_size=1,
+                    lease_duration=timedelta(minutes=5),
+                )
+            )
+            claim_session.commit()
+
+        assert len(claims_after_recovery) == 1
+
+        claimed = claims_after_recovery[0]
+
+        assert claimed.job_id == job_id
+        assert claimed.processing_attempt_count == 2
+        assert claimed.worker_id == "worker-after-recovery"
+        assert claimed.claim_token != old_claim_token
+
+        with Session(engine) as verification_session:
+            persisted = verification_session.get(
+                BackgroundJob,
+                job_id,
+            )
+
+            assert persisted is not None
+            assert persisted.status is BackgroundJobStatus.PROCESSING
+            assert persisted.processing_attempt_count == 2
+            assert persisted.worker_id == "worker-after-recovery"
+            assert persisted.claim_token != old_claim_token
+            assert persisted.worker_id != old_worker_id
+    finally:
+        release_recovery.set()
+
+        with Session(engine) as cleanup_session:
+            cleanup_session.execute(delete(BackgroundJob).where(BackgroundJob.id == job_id))
+            cleanup_session.commit()
+
+
+def test_concurrent_completion_and_failure_allow_one_terminal_transition() -> None:
+    engine = get_engine()
+    job = _processing_job()
+    barrier = Barrier(2)
+
+    with Session(engine) as seed_session:
+        seed_session.add(job)
+        seed_session.commit()
+
+        job_id = job.id
+        worker_id = job.worker_id
+        claim_token = job.claim_token
+
+    assert worker_id is not None
+    assert claim_token is not None
+
+    def complete() -> str:
+        with Session(engine) as session:
+            barrier.wait(timeout=10)
+
+            try:
+                CompleteBackgroundJobService(BackgroundJobRepository(session)).execute(
+                    CompleteBackgroundJobCommand(
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        claim_token=claim_token,
+                    )
+                )
+                session.commit()
+
+                return "succeeded"
+            except BackgroundJobInvalidTransitionError:
+                session.rollback()
+
+                return "invalid_transition"
+
+    def fail() -> str:
+        with Session(engine) as session:
+            barrier.wait(timeout=10)
+
+            try:
+                FailBackgroundJobService(
+                    BackgroundJobRepository(session),
+                    _retry_policy(),
+                ).execute(
+                    FailBackgroundJobCommand(
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        claim_token=claim_token,
+                        failure_kind=BackgroundJobFailureKind.TERMINAL,
+                        error_code="terminal_test_failure",
+                        error_message="Terminal test failure.",
+                    )
+                )
+                session.commit()
+
+                return "dead_lettered"
+            except BackgroundJobInvalidTransitionError:
+                session.rollback()
+
+                return "invalid_transition"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            completion_future = executor.submit(complete)
+            failure_future = executor.submit(fail)
+
+            results = [
+                completion_future.result(timeout=20),
+                failure_future.result(timeout=20),
+            ]
+
+        assert results.count("invalid_transition") == 1
+
+        successful = next(result for result in results if result != "invalid_transition")
+
+        assert successful in {"succeeded", "dead_lettered"}
+
+        with Session(engine) as verification_session:
+            persisted = verification_session.get(
+                BackgroundJob,
+                job_id,
+            )
+
+            assert persisted is not None
+            assert persisted.worker_id is None
+            assert persisted.claim_token is None
+            assert persisted.claimed_at is None
+            assert persisted.lease_expires_at is None
+
+            if successful == "succeeded":
+                assert persisted.status is BackgroundJobStatus.SUCCEEDED
+                assert persisted.completed_at is not None
+                assert persisted.dead_lettered_at is None
+            else:
+                assert persisted.status is BackgroundJobStatus.DEAD_LETTERED
+                assert persisted.dead_lettered_at is not None
+                assert persisted.completed_at is None
     finally:
         with Session(engine) as cleanup_session:
             cleanup_session.execute(delete(BackgroundJob).where(BackgroundJob.id == job_id))
