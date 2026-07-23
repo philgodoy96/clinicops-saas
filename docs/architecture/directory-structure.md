@@ -58,31 +58,38 @@ clinicops-saas/
 │       ├── authentication/
 │       ├── authorization/
 │       ├── billing/
+│       │   ├── jobs/
+│       │   └── webhooks/
 │       ├── cli/
 │       ├── core/
 │       ├── db/
 │       ├── identity/
 │       ├── invitations/
 │       ├── jobs/
+│       │   └── runtime/
 │       ├── tenancy/
-│       └── main.py
+│       ├── main.py
+│       └── worker.py
 │
 ├── tests/
 │   ├── integration/
 │   └── unit/
 │
+├── .dockerignore
 ├── .env.example
 ├── .gitignore
 ├── alembic.ini
 ├── compose.yml
+├── Dockerfile
 ├── ENGINEERING_GUIDE.md
 ├── pyproject.toml
 └── README.md
 ```
 
 The current tree reflects implemented capabilities only. It includes the durable
-background-job queue package. It does not yet include a worker entry point,
-audit package, patients package, professionals package, Dockerfile, ADR
+background-job queue package, worker runtime entry point, billing webhook job
+handler, Dockerfile, and Compose `api` and `worker` services. It does not yet
+include an audit package, patients package, professionals package, ADR
 directory, or dedicated security-test directory.
 
 ---
@@ -116,12 +123,12 @@ clinicops-saas/
 │       ├── identity/
 │       ├── invitations/
 │       ├── tenancy/
-│       ├── jobs/            # durable queue foundation implemented; worker runtime remains target
+│       ├── jobs/            # durable queue and worker runtime implemented
 │       ├── audit/           # Durable Audit Logs
 │       ├── patients/        # Patients Domain
 │       ├── professionals/   # Professionals Domain
 │       ├── main.py
-│       └── worker.py        # worker runtime entry point
+│       └── worker.py
 │
 ├── tests/
 │   ├── factories/
@@ -141,16 +148,16 @@ clinicops-saas/
 
 This is the target structure for remaining milestones.
 
-The durable `jobs/` queue foundation already exists in the current tree. The
-worker runtime entry point, Docker packaging, audit package, patients package,
-and professionals package remain target introductions.
+The durable `jobs/` queue foundation, worker runtime entry point, billing job
+handler packages, Dockerfile, and Compose worker service already exist in the
+current tree. The audit package, patients package, and professionals package
+remain target introductions.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
 Exact internal filenames inside `audit/`, `patients/`, and `professionals/`
-remain subject to system design approval for each milestone. Worker-runtime
-packages under `jobs/` may evolve when the worker composition root lands.
+remain subject to system design approval for each milestone.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -223,7 +230,7 @@ Examples:
 - tenant isolation;
 - authentication and authorization;
 - billing and webhook processing;
-- background job queue foundation and future worker execution.
+- background job queue and worker execution.
 
 #### `docs/adr/`
 
@@ -300,21 +307,27 @@ It must not contain business workflows.
 
 ### `worker.py`
 
-Target entry point for the background worker process that remains under the
-Background Jobs & Worker milestone.
+Entry point for the background worker process.
 
-Intended responsibilities include:
+Responsibilities include:
 
 - configuration loading;
-- database setup;
-- job registry initialization;
-- worker loop startup;
-- graceful shutdown.
+- database session-factory setup;
+- explicit job-handler registry initialization;
+- worker identity resolution;
+- SIGINT and SIGTERM shutdown handling;
+- sequential worker loop startup.
 
 It must not duplicate business logic from application services.
 
-The durable queue foundation already exists under `src/clinicops/jobs/`. The
-worker runtime entry point does not exist in the current repository tree.
+Start the process with:
+
+```text
+python -m clinicops.worker
+```
+
+The durable queue foundation lives under `src/clinicops/jobs/`. The worker
+composition root lives in `src/clinicops/worker.py`.
 
 ---
 
@@ -412,9 +425,9 @@ patients
 professionals
 ```
 
-The `jobs` package currently owns the durable PostgreSQL-backed queue
-foundation. The worker runtime entry point and billing handler integration
-remain target work under the same macro-milestone.
+The `jobs` package owns the durable PostgreSQL-backed queue foundation and the
+worker runtime composition helpers under `jobs/runtime/`. Billing owns the
+`billing.webhook.process` handler and typed job payload under `billing/jobs/`.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -643,13 +656,19 @@ src/clinicops/billing/
 │   ├── get_subscription.py
 │   ├── schedule_plan_change.py
 │   └── schedule_cancellation.py
-└── webhooks/
+├── webhooks/
+│   ├── __init__.py
+│   ├── contracts.py
+│   ├── enqueue_processing_job.py
+│   ├── handlers.py
+│   ├── ingest.py
+│   ├── process.py
+│   └── signatures.py
+└── jobs/
     ├── __init__.py
-    ├── contracts.py
-    ├── handlers.py
-    ├── ingest.py
-    ├── process.py
-    └── signatures.py
+    ├── constants.py
+    ├── payloads.py
+    └── process_billing_webhook_event.py
 ```
 
 The implemented HTTP composition for billing lives under the repository's
@@ -660,7 +679,8 @@ src/clinicops/api/v1/billing/
 ├── __init__.py
 ├── dependencies.py
 ├── routes.py
-└── schemas.py
+├── schemas.py
+└── webhooks.py
 ```
 
 Responsibilities are separated by concrete architectural boundary:
@@ -720,7 +740,11 @@ billing/services/
        cancellation orchestration
 
 billing/webhooks/
-    -> webhook authentication, durable ingestion, and processing
+    -> webhook authentication, durable ingestion, processing-job enqueueing,
+       and processing
+
+billing/jobs/
+    -> typed billing.webhook.process payload and worker handler
 
 api/v1/billing/
     -> tenant-scoped billing HTTP composition
@@ -771,23 +795,22 @@ The payment provider remains application-scoped because the deterministic
 fake adapter stores in-memory idempotency and ambiguous-outcome state across
 requests.
 
-Billing is complete for its approved synchronous and local-provider scope.
+Billing is complete for its approved synchronous, local-provider, and
+asynchronous webhook-job scope.
 It does not currently contain:
 
 ```text
-durable billing jobs
-worker-backed webhook processing
-worker-backed reconciliation
+worker-backed reconciliation scheduling
 real provider adapters
 entitlement enforcement
 invoice lifecycles
 ```
 
-The durable background-job queue foundation exists under `src/clinicops/jobs/`.
-Background Jobs & Worker will later operationalize webhook processing and
-reconciliation through the worker runtime. Real provider adapters,
-entitlements, and invoices remain intentionally deferred beyond the current
-release.
+The durable background-job queue and worker runtime exist under
+`src/clinicops/jobs/` and `src/clinicops/worker.py`. Billing webhook processing
+runs through the registered `billing.webhook.process` handler. Periodic
+reconciliation scheduling, real provider adapters, entitlements, and invoices
+remain intentionally deferred beyond the current release.
 
 Billing models are registered centrally through:
 
@@ -813,7 +836,7 @@ It does not introduce a parallel `src/clinicops/billing/api/` tree.
 ## Jobs Package
 
 The implemented jobs package provides the durable PostgreSQL-backed queue
-foundation under `src/clinicops`.
+foundation and worker runtime under `src/clinicops`.
 
 ```text
 src/clinicops/jobs/
@@ -824,12 +847,24 @@ src/clinicops/jobs/
 ├── retry.py
 ├── repositories/
 │   └── background_job_repository.py
-└── services/
-    ├── enqueue_background_job.py
-    ├── claim_background_jobs.py
-    ├── complete_background_job.py
-    ├── fail_background_job.py
-    └── recover_stale_background_jobs.py
+├── services/
+│   ├── enqueue_background_job.py
+│   ├── claim_background_jobs.py
+│   ├── complete_background_job.py
+│   ├── fail_background_job.py
+│   └── recover_stale_background_jobs.py
+└── runtime/
+    ├── handler.py
+    ├── identity.py
+    ├── registry.py
+    ├── exceptions.py
+    └── worker.py
+```
+
+The process entry point remains:
+
+```text
+src/clinicops/worker.py
 ```
 
 Capability-level ownership:
@@ -856,21 +891,26 @@ repositories/
 services/
     -> idempotent enqueueing, concurrent claiming, completion, failure,
        and stale-processing recovery
+
+runtime/
+    -> handler protocol, explicit registry, worker identity, and sequential
+       execution loop
+
+worker.py
+    -> process composition root and signal-aware entrypoint
 ```
 
-The package does not currently contain:
+Intentionally deferred under jobs:
 
 ```text
-worker.py
-handler registry
-billing webhook job handlers
-reconciliation job handlers
-automatic enqueue integration from billing
-worker-specific settings
+recurring scheduler
+job administration API
+manual replay API
+metrics or tracing backend integration
+external message broker
 ```
 
-Those responsibilities remain target work for the worker runtime and billing
-integration slices. Detailed queue semantics live in
+Detailed queue and worker semantics live in
 `docs/architecture/background-jobs.md`.
 
 Jobs models are registered centrally through:
@@ -987,7 +1027,9 @@ Examples:
 - invitation acceptance transactions;
 - tenant-scoped patient access once Patients lands;
 - duplicate webhook handling;
-- background job enqueue, claim, completion, failure, and concurrency behavior;
+- background job enqueue, claim, completion, failure, concurrency, and
+  worker-runtime behavior;
+- end-to-end billing webhook job execution;
 - audit persistence once Durable Audit Logs lands.
 
 ---

@@ -10,7 +10,7 @@ This foundation is designed for at-least-once execution. Job handlers must there
 
 ## Architectural Position
 
-The application remains a modular monolith with separate API and worker processes built from the same codebase.
+The application remains a modular monolith with separate API and worker processes built from the same codebase and the same Docker image.
 
 ```text
 API process
@@ -28,7 +28,7 @@ Worker process
     -> records success, retry, or dead-letter state
 ```
 
-The current repository implements the durable queue foundation. The worker runtime and billing handler integration are separate follow-up work.
+The repository implements both the durable PostgreSQL queue foundation and the worker runtime that executes registered handlers, including billing webhook processing.
 
 ## Responsibilities
 
@@ -187,7 +187,7 @@ Completion or failure transaction
     -> commit
 ```
 
-The worker runtime will own these transaction boundaries when introduced.
+The worker runtime owns these transaction boundaries during job execution.
 
 ## Idempotent Enqueueing
 
@@ -500,9 +500,162 @@ The background job foundation includes PostgreSQL integration tests for:
 
 Concurrent tests use independent SQLAlchemy sessions and deterministic synchronization primitives rather than timing-based sleeps.
 
+## Worker Runtime
+
+The worker process is composed in `clinicops.worker` and started with:
+
+```text
+python -m clinicops.worker
+```
+
+Composition responsibilities:
+
+- load validated application settings;
+- create the SQLAlchemy session factory;
+- build the explicit job-handler registry;
+- resolve worker identity;
+- install SIGINT and SIGTERM shutdown handlers;
+- run the sequential execution loop until stop is requested.
+
+### Handler Protocol and Registry
+
+Handlers implement an explicit protocol:
+
+```text
+job_type
+supported_payload_version
+execute(claimed_job)
+```
+
+Handlers are registered in an explicit in-process registry. Resolution is deterministic by `job_type`.
+
+Unknown job types and unsupported payload versions are terminal failures. Job payloads cannot select import paths, class names, or executable code. Dynamic handler loading is intentionally excluded.
+
+The current registry includes:
+
+```text
+billing.webhook.process
+```
+
+### Worker Identity and Settings
+
+Worker identity is either:
+
+- an explicit `CLINICOPS_WORKER_ID`;
+- or a generated value based on hostname, process ID, and a short unique suffix.
+
+Worker runtime settings:
+
+```text
+CLINICOPS_WORKER_ID
+CLINICOPS_WORKER_POLL_INTERVAL_SECONDS
+CLINICOPS_WORKER_LEASE_SECONDS
+CLINICOPS_WORKER_STALE_RECOVERY_INTERVAL_SECONDS
+CLINICOPS_WORKER_STALE_RECOVERY_BATCH_SIZE
+CLINICOPS_WORKER_RETRY_BASE_DELAY_SECONDS
+CLINICOPS_WORKER_RETRY_MAXIMUM_DELAY_SECONDS
+```
+
+Defaults match local development needs: one-second idle polling, a five-minute lease, sixty-second stale-recovery cadence, and capped exponential retry delays.
+
+### Iteration Flow
+
+Each iteration:
+
+1. recovers stale processing claims when the recovery interval is due;
+2. claims at most one eligible job;
+3. resolves the registered handler;
+4. executes the handler after the claim transaction has committed;
+5. records completion or failure in a separate queue transaction.
+
+When no job is available, the worker waits on an interruptible idle poll using the configured poll interval. SIGINT and SIGTERM set a stop event so idle waiting can end promptly. An in-flight handler is allowed to finish before process exit.
+
+One worker process executes one claimed job at a time. Horizontal throughput comes from running multiple worker processes against the same PostgreSQL queue.
+
+### Independent Transaction Boundaries
+
+Worker execution separates three database boundaries:
+
+```text
+Claim transaction
+    -> select and lock one eligible job
+    -> mark the job as processing
+    -> commit
+
+Handler execution
+    -> uses an independent domain session and transaction
+    -> does not hold queue-selection locks
+    -> must not call providers while queue row locks are held
+
+Completion or failure transaction
+    -> lock the claimed job
+    -> validate worker ID and claim token
+    -> record succeeded, retry_scheduled, or dead_lettered
+    -> commit
+```
+
+Billing webhook handling follows this model: the claim commits first, `ProcessBillingWebhookEventService` runs in a fresh billing transaction, and queue completion or failure is recorded afterward.
+
+### Failure Classification and Claim Loss
+
+Registered handler failures are classified as retryable or terminal.
+
+Unexpected exceptions raised by a handler are treated as retryable so temporary faults can be retried within attempt limits.
+
+Unknown job types and unsupported payload versions are terminal.
+
+If completion or failure recording observes that claim ownership has been lost—for example after stale recovery and a newer claim—the worker records a claim-loss outcome and does not retry the obsolete claim token.
+
+### Structured Logging
+
+Worker and job execution logs include structured context such as:
+
+- worker ID;
+- job ID;
+- job type;
+- processing attempt count;
+- maximum attempts;
+- claim token;
+- correlation ID;
+- origin request ID;
+- outcome;
+- duration.
+
+Raw job payloads and secrets are not logged.
+
+### Billing Webhook Job Integration
+
+Authenticated webhook ingestion enqueues:
+
+```text
+job_type = billing.webhook.process
+payload = { webhook_event_id }
+idempotency_key = billing-webhook-process:<webhook_event_id>
+```
+
+in the same HTTP transaction that persists `BillingWebhookEvent`.
+
+Duplicate provider deliveries reuse one durable event and one semantic job. The public `202 Accepted` response does not expose the job ID. Billing domain tables remain the source of truth; the job row coordinates execution only.
+
+End-to-end HTTP-to-worker processing tests and at-least-once replay-safety tests cover this path. Billing lifecycle details remain in `docs/architecture/billing-lifecycle.md`.
+
+### Container Execution Model
+
+API and worker processes are built from the same Docker image.
+
+Compose services:
+
+```text
+postgres
+api
+worker
+```
+
+The worker command is `python -m clinicops.worker`. The worker exposes no HTTP port. PostgreSQL health is a dependency for both API and worker. Container `init` forwards signals so graceful shutdown reaches the worker process. Migrations remain explicit operator actions; neither API nor worker runs Alembic automatically.
+
 ## Current Implementation Boundary
 
-Implemented in the current background job foundation:
+Implemented:
 
 - durable `BackgroundJob` persistence;
 - Alembic migration and indexes;
@@ -518,27 +671,49 @@ Implemented in the current background job foundation:
 - capped exponential backoff with equal jitter;
 - dead-letter state;
 - stale-claim recovery;
+- explicit job-handler protocol;
+- explicit job-handler registry;
+- deterministic handler resolution;
+- unknown-job-type and unsupported-payload-version terminal failure;
+- worker identity generation and configuration;
+- worker runtime settings;
+- sequential one-job-at-a-time execution per process;
+- horizontal scaling through multiple worker processes;
+- periodic stale-claim recovery cadence;
+- interruptible idle polling;
+- graceful shutdown through SIGINT and SIGTERM;
+- claim commit before handler execution;
+- independent billing and queue transaction boundaries;
+- unexpected handler exceptions classified as retryable;
+- claim-loss detection;
+- structured worker and job execution logging;
+- typed billing webhook job payload;
+- `billing.webhook.process` handler;
+- concrete SQLAlchemy billing webhook processor;
+- atomic billing webhook ingestion and job enqueueing;
+- stable event-derived job idempotency key;
+- duplicate provider delivery reusing one durable event and one semantic job;
+- end-to-end HTTP-to-worker billing processing tests;
+- at-least-once replay safety tests;
+- worker process entrypoint `python -m clinicops.worker`;
+- API and worker processes from the same Docker image;
+- Compose `postgres`, `api`, and `worker` services;
 - unit, integration, failure-path, and concurrency tests.
 
-Not implemented in this foundation:
+Intentionally deferred:
 
-- worker process entrypoint;
-- worker execution loop;
-- handler registry;
-- automatic webhook-job enqueueing;
-- billing webhook job handler;
-- reconciliation job handler;
-- reconciliation scheduling;
-- graceful worker shutdown;
-- worker configuration;
-- Docker worker service;
-- job administration or replay API;
-- recurring job scheduler;
+- periodic billing subscription reconciliation scheduling;
+- generic recurring-job scheduler;
+- reconciliation job producer;
+- public job-administration API;
+- manual replay API;
+- job cancellation;
+- in-process parallel handler execution;
 - heartbeat or lease extension;
-- metrics or tracing backend;
-- external message broker.
-
-These capabilities belong to the worker runtime and billing integration milestone.
+- external message broker;
+- metrics backend;
+- distributed tracing backend;
+- frontend worker controls.
 
 ## Intentional Technology Choice
 

@@ -157,22 +157,25 @@ The raw payload itself is persisted as validated JSON, not logged.
 
 ## Durable Acknowledgement
 
-ClinicOps returns `202 Accepted` only after the webhook event row commits.
+ClinicOps returns `202 Accepted` only after the webhook event row and its
+processing job commit together.
 
 Security and reliability boundary:
 
 ```text
 valid signature
     -> valid canonical event
+    -> durable event persistence
+    -> durable processing-job enqueueing
     -> durable database commit
     -> acknowledgement
 ```
 
 A provider must not receive a successful acknowledgement for an event that was
-not stored durably.
+not stored durably with its semantic processing job.
 
 An identical duplicate receives the same public acknowledgement without
-creating another row.
+creating another event row or another semantic job.
 
 ## Webhook Authorization Boundary
 
@@ -204,6 +207,7 @@ Webhook responses and public errors do not expose:
 - raw request bodies;
 - payload hashes;
 - persisted webhook IDs;
+- background job IDs;
 - processing states;
 - internal database errors;
 - provider payloads;
@@ -420,9 +424,9 @@ Security and integrity properties:
 A Transaction B failure leaves the durable `processing` claim for later
 recovery.
 
-Durable background-job queue infrastructure now provides stale-claim recovery
-for queue rows. Wiring billing webhook processing through the worker runtime
-remains future work.
+Durable background-job queue infrastructure provides stale-claim recovery for
+queue rows. Billing webhook processing executes through the worker runtime after
+authenticated ingestion enqueues `billing.webhook.process`.
 
 ## Processing Failure Data
 
@@ -826,6 +830,8 @@ No public or administrative reconciliation endpoint is implemented.
 The service is prepared for controlled execution by future worker or operator
 tooling that builds on the durable background-job queue foundation.
 
+Periodic reconciliation scheduling remains intentionally deferred.
+
 Future operational entry points must provide:
 
 - authenticated operator identity;
@@ -855,7 +861,8 @@ Job payloads must not contain:
 - raw credential material;
 - arbitrary provider URLs;
 - serialized ORM objects;
-- duplicated full webhook payloads.
+- duplicated full webhook payloads;
+- raw webhook bodies.
 
 Payloads should reference durable local identifiers, such as a billing webhook
 event ID or subscription ID, rather than copying domain records or credential
@@ -870,7 +877,9 @@ Traceability requirements:
 
 - `correlation_id` is required for end-to-end operational linking;
 - `origin_request_id` is optional because some jobs originate from scheduled or
-  recovery workflows rather than HTTP requests.
+  recovery workflows rather than HTTP requests;
+- structured worker logs may include worker ID, job ID, job type, claim token,
+  correlation ID, and request ID, but must not include raw payloads.
 
 Claim ownership is enforced on completion and failure transitions. Mutation
 requires:
@@ -886,8 +895,28 @@ claim token
 A stale worker cannot complete or fail a job after recovery or after another
 worker has claimed it with a new claim token.
 
-The current queue foundation does not expose a public job-administration API,
-manual replay endpoint, or administrative state-mutation surface.
+## Worker Runtime Security
+
+The worker process executes registered handlers only.
+
+Security properties:
+
+- an explicit handler registry prevents arbitrary dynamic handler loading;
+- job payload data cannot select import paths, class names, or executable code;
+- webhook authentication occurs before event persistence and job enqueueing;
+- the worker does not expose a public HTTP interface;
+- the worker does not expose a job-administration endpoint;
+- API and worker use the same application configuration model and PostgreSQL
+  database;
+- local Compose defaults are development-only;
+- real secrets remain outside version control.
+
+Billing webhook jobs carry only the local webhook-event ID. The durable
+`BillingWebhookEvent` remains the source of truth for authenticated provider
+content.
+
+The current queue and worker runtime do not expose a public job-administration
+API, manual replay endpoint, or administrative state-mutation surface.
 
 ## Security Invariants
 
@@ -944,6 +973,10 @@ manual replay endpoint, or administrative state-mutation surface.
 - Background job claim mutation requires job ID, worker ID, and claim token.
 - Stale claim tokens cannot mutate recovered or newly claimed jobs.
 - Background job administration is not exposed as a public API.
+- Worker handlers are resolved only through an explicit registry.
+- Job payloads cannot select import paths or executable code.
+- The worker process exposes no public HTTP or administration surface.
+- Webhook authentication precedes durable event persistence and job enqueueing.
 
 ## Intentionally Deferred Security Controls
 
@@ -960,16 +993,14 @@ boundary:
 - WAF rules;
 - production provider adapters.
 
-The durable background-job queue foundation now provides stale-claim recovery,
-retry scheduling, attempt limits, and dead-letter state for queue rows. The
-following operational controls still build on the implemented internal
-processing and transaction boundaries but are not yet part of the current
-billing processing boundary:
+The durable background-job queue and worker runtime now provide stale-claim
+recovery, retry scheduling, attempt limits, dead-letter state, explicit handler
+registration, and asynchronous billing webhook job execution. The following
+operational controls still build on the implemented internal processing and
+transaction boundaries but are not yet part of the current release:
 
 - authenticated operational replay tooling;
 - operator RBAC for manual processing;
-- worker-backed webhook processing;
-- automatic enqueue after webhook ingestion;
 - structured security event alerts;
 - multi-provider processing policies;
 - entitlement propagation;

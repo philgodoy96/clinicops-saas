@@ -78,6 +78,7 @@ The implemented billing foundation now establishes:
 - immutable payload hashing;
 - provider event deduplication;
 - conflicting duplicate detection;
+- atomic processing-job enqueueing after authenticated ingestion;
 - PostgreSQL concurrency protection;
 - unknown local subscription acceptance;
 - HTTP integration coverage;
@@ -114,9 +115,10 @@ The implemented billing foundation now establishes:
 
 This document distinguishes the implemented domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
-plan-change, scheduled cancellation, webhook-ingestion, webhook-
-processing, and reconciliation workflow foundations from entitlement,
-worker, and real-provider capabilities planned for later milestones.
+plan-change, scheduled cancellation, webhook-ingestion, asynchronous
+webhook-job enqueueing, webhook processing, and reconciliation workflow
+foundations from entitlement and real-provider capabilities planned for
+later milestones.
 
 ## Module Ownership
 
@@ -170,6 +172,7 @@ The billing module currently owns:
 - canonical provider webhook event validation;
 - HMAC-SHA256 webhook signature verification;
 - durable webhook-event receipt and deduplication;
+- atomic processing-job enqueueing for authenticated deliveries;
 - billing webhook event processing;
 - renewal and cancellation event application;
 - provider state-version ordering during processing.
@@ -177,17 +180,13 @@ The billing module currently owns:
 The current billing implementation does not own:
 
 - real payment-provider integrations;
-- stale in-progress recovery;
-- provider retry scheduling;
-- background provider execution;
-- background webhook processing workers;
 - entitlement enforcement;
-- background-job execution;
+- periodic reconciliation scheduling;
 - audit-log persistence.
 
-Those deferred capabilities are intentionally introduced in later milestones
-after their security, transaction, failure, and recovery boundaries are
-implemented explicitly.
+Those deferred capabilities remain intentional scope decisions for later
+milestones after their security, transaction, failure, and recovery
+boundaries are implemented explicitly.
 
 ## Billing Ownership
 
@@ -673,13 +672,15 @@ The implemented flow is:
 ```text
 Verify raw-body signature
     -> persist or resolve provider event
-    -> reject duplicate application of the same event
+    -> enqueue billing.webhook.process in the same transaction
+    -> commit and acknowledge
+    -> worker claims the job
     -> compare provider state version
     -> apply or ignore subscription transition
 ```
 
-Background worker execution, scheduled retries, and stale `processing`
-recovery remain intentionally deferred.
+Periodic subscription reconciliation scheduling remains intentionally
+deferred.
 
 ## Implemented Billing Webhook Ingestion
 
@@ -817,7 +818,8 @@ logs or returned in responses.
 
 ## Durable Receipt Semantics
 
-A valid delivery is acknowledged only after its event row commits.
+A valid delivery is acknowledged only after its event row and processing job
+commit together.
 
 The workflow is:
 
@@ -826,6 +828,7 @@ authenticate raw request bytes
     -> validate canonical event
     -> calculate SHA-256 over exact raw bytes
     -> reserve or replay BillingWebhookEvent
+    -> enqueue billing.webhook.process for the local webhook-event ID
     -> commit
     -> return 202 Accepted
 ```
@@ -848,6 +851,7 @@ The public response does not expose:
 
 - whether the event was new or duplicate;
 - the local webhook event ID;
+- the background job ID;
 - processing status;
 - processing attempts;
 - payload hashes;
@@ -1004,7 +1008,7 @@ and apply ordering and lifecycle rules.
 
 ## Ingestion and Processing Separation
 
-Webhook ingestion is intentionally limited to:
+Webhook HTTP ingestion is intentionally limited to:
 
 - request authentication;
 - payload boundary validation;
@@ -1013,6 +1017,7 @@ Webhook ingestion is intentionally limited to:
 - durable event persistence;
 - duplicate replay;
 - conflicting duplicate detection;
+- durable processing-job enqueueing;
 - durable acknowledgement.
 
 It does not:
@@ -1023,11 +1028,57 @@ It does not:
 - validate provider event ordering;
 - reject stale provider state versions;
 - update entitlements;
-- enqueue retries;
 - perform reconciliation.
 
-This keeps the provider request lifecycle short and ensures the event is
-durable before domain processing begins.
+This keeps the provider request lifecycle short and ensures the event and its
+processing job are durable before domain processing begins.
+
+## Asynchronous Webhook Job Path
+
+Authenticated provider deliveries follow this asynchronous path:
+
+```text
+provider request
+    -> raw-body authentication
+    -> durable BillingWebhookEvent
+    -> durable billing.webhook.process job
+    -> one commit
+    -> 202 Accepted
+    -> worker claim
+    -> billing processing service
+    -> queue completion or failure
+```
+
+Webhook authentication still occurs before persistence and enqueueing.
+
+The job payload contains only the local webhook-event ID:
+
+```text
+{
+  "webhook_event_id": "<uuid>"
+}
+```
+
+The event-derived idempotency key is:
+
+```text
+billing-webhook-process:<webhook_event_id>
+```
+
+Duplicate provider deliveries reuse one durable event and one semantic job.
+`BillingWebhookEvent` remains the source of business truth. The job row
+coordinates execution and does not duplicate billing domain state.
+
+The worker claims the job after the HTTP transaction commits, then runs
+`ProcessBillingWebhookEventService` in a fresh billing transaction. Queue
+completion or failure is recorded in a separate queue transaction.
+
+Delivery is at least once. Completed-event replay and provider-state ordering
+keep repeated handler execution safe. The public response does not expose the
+job ID.
+
+Detailed worker runtime behavior lives in
+`docs/architecture/background-jobs.md`.
 
 ## Implemented Billing Webhook Processing
 
@@ -1117,8 +1168,10 @@ the event completion rolls back
 the durable processing claim remains
 ```
 
-Recovery of stale `processing` claims is intentionally deferred to the
-background-jobs milestone.
+Stale `processing` claims on billing webhook events remain recoverable through
+controlled operational workflows. Queue-row stale-claim recovery is provided by
+the background-job worker runtime when a claimed `billing.webhook.process` job
+lease expires.
 
 ## Processing Claim Lifecycle
 
@@ -2435,8 +2488,8 @@ The JSONB payload stores the verified provider event body after signature
 verification. Signature headers and secrets are never persisted.
 
 Webhook ingestion, HMAC verification, event deduplication, durable receipt,
-and event processing are implemented. Background worker execution and
-scheduled retry orchestration remain intentionally deferred.
+atomic processing-job enqueueing, and event processing are implemented.
+Periodic reconciliation scheduling remains intentionally deferred.
 
 ## Repository Boundary
 
@@ -3912,32 +3965,27 @@ STAFF
 Immediate cancellation, undo cancellation, and reactivation API surfaces
 remain deferred.
 
-## Planned Background Processing Boundary
+## Background Processing Boundary
 
-Future background jobs will execute durable billing work such as:
+Billing webhook processing executes asynchronously through the shared
+PostgreSQL-backed worker runtime.
+
+Implemented billing job work:
 
 ```text
-execute provider operation
-process billing webhook
-reconcile subscription
+billing.webhook.process
 ```
 
-The billing domain rules are intentionally independent of HTTP so the same
-application services can later be invoked by API routes and workers.
+Authenticated webhook ingestion enqueues that job in the same HTTP transaction
+that persists `BillingWebhookEvent`. The worker resolves the registered
+handler, loads the durable event by local ID, and invokes
+`ProcessBillingWebhookEventService`.
 
-The background-job milestone will define:
+The billing domain rules remain independent of HTTP so the same application
+services can be invoked by API routes and workers.
 
-- durable job records;
-- concurrent claiming;
-- retries;
-- exponential backoff;
-- jitter;
-- terminal failures;
-- worker leases;
-- correlation propagation.
-
-The current billing foundation does not include a billing-specific queue,
-worker, or task runner.
+Periodic billing subscription reconciliation scheduling, a generic recurring
+scheduler, and a reconciliation job producer remain intentionally deferred.
 
 ## Testing Strategy
 
@@ -4534,12 +4582,8 @@ The following capabilities are intentionally deferred:
 - reconciliation history API;
 - administrative reconciliation endpoint;
 - operator-triggered replay;
-- background retries;
-- exponential backoff;
-- jitter;
-- stale processing recovery;
-- maximum retry attempts;
-- dead-letter handling;
+- reconciliation job producer;
+- generic recurring-job scheduler;
 - invoice reconciliation;
 - payment reconciliation;
 - refund reconciliation;
@@ -4548,10 +4592,7 @@ The following capabilities are intentionally deferred:
 - reactivation workflows;
 - undo-cancellation workflows;
 - real payment-provider adapters;
-- background worker loop;
 - automatic event discovery;
-- scheduled retry execution;
-- retry availability timestamps;
 - entitlement application;
 - invoice processing;
 - refunds;
@@ -4570,9 +4611,8 @@ The following capabilities are intentionally deferred:
 - multiple active signing secrets;
 - rate limiting;
 - edge firewall configuration;
-- stale `in_progress` recovery;
+- stale `in_progress` recovery for outbound provider operations;
 - entitlement revocation;
-- background jobs;
 - live provider lookup during billing reads;
 - background provider execution;
 - payment credentials;
@@ -4595,7 +4635,7 @@ The following capabilities are intentionally deferred:
 These are future operational or expanded billing capabilities.
 
 They do not belong to the implemented single-subscription reconciliation
-boundary.
+boundary or the implemented asynchronous webhook-job path.
 
 They are not required to establish the current domain, persistence,
 fake-provider, subscription-creation, subscription-read, scheduled
