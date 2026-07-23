@@ -420,8 +420,9 @@ Security and integrity properties:
 A Transaction B failure leaves the durable `processing` claim for later
 recovery.
 
-Stale claim recovery is intentionally delegated to future operational job
-infrastructure.
+Durable background-job queue infrastructure now provides stale-claim recovery
+for queue rows. Wiring billing webhook processing through the worker runtime
+remains future work.
 
 ## Processing Failure Data
 
@@ -822,8 +823,8 @@ public HTTP error surface.
 
 No public or administrative reconciliation endpoint is implemented.
 
-The service is prepared for controlled execution by future background-job or
-operator tooling.
+The service is prepared for controlled execution by future worker or operator
+tooling that builds on the durable background-job queue foundation.
 
 Future operational entry points must provide:
 
@@ -836,6 +837,57 @@ Future operational entry points must provide:
 - safe retry behavior;
 - observability for provider failures;
 - protections against repeated manual execution.
+
+## Background Job Queue Security
+
+The durable background-job queue stores execution coordination state in
+PostgreSQL. Job rows coordinate asynchronous work; they are not a second source
+of business truth. Detailed lifecycle semantics live in
+`docs/architecture/background-jobs.md`.
+
+Job payloads must not contain:
+
+- passwords;
+- access tokens;
+- refresh tokens;
+- provider credentials;
+- webhook-signing secrets;
+- raw credential material;
+- arbitrary provider URLs;
+- serialized ORM objects;
+- duplicated full webhook payloads.
+
+Payloads should reference durable local identifiers, such as a billing webhook
+event ID or subscription ID, rather than copying domain records or credential
+material into the queue.
+
+Failure metadata stored on job rows is normalized, bounded, and retained for
+operations. Persisted error messages must remain suitable for operational
+diagnosis and must exclude secrets, raw provider bodies, credentials, and
+unrelated tenant data.
+
+Traceability requirements:
+
+- `correlation_id` is required for end-to-end operational linking;
+- `origin_request_id` is optional because some jobs originate from scheduled or
+  recovery workflows rather than HTTP requests.
+
+Claim ownership is enforced on completion and failure transitions. Mutation
+requires:
+
+```text
+job ID
++
+worker ID
++
+claim token
+```
+
+A stale worker cannot complete or fail a job after recovery or after another
+worker has claimed it with a new claim token.
+
+The current queue foundation does not expose a public job-administration API,
+manual replay endpoint, or administrative state-mutation surface.
 
 ## Security Invariants
 
@@ -885,6 +937,13 @@ Future operational entry points must provide:
   boundary.
 - Reconciliation failure messages exclude secrets and raw provider payloads.
 - Reconciliation is not exposed as a public API operation.
+- Background job payloads exclude secrets, credentials, and duplicated webhook
+  bodies.
+- Background job payloads prefer durable local identifiers.
+- Background job failure metadata is bounded and sanitized.
+- Background job claim mutation requires job ID, worker ID, and claim token.
+- Stale claim tokens cannot mutate recovered or newly claimed jobs.
+- Background job administration is not exposed as a public API.
 
 ## Intentionally Deferred Security Controls
 
@@ -901,24 +960,24 @@ boundary:
 - WAF rules;
 - production provider adapters.
 
-The following operational controls build on the implemented internal
+The durable background-job queue foundation now provides stale-claim recovery,
+retry scheduling, attempt limits, and dead-letter state for queue rows. The
+following operational controls still build on the implemented internal
 processing and transaction boundaries but are not yet part of the current
-processing boundary:
+billing processing boundary:
 
 - authenticated operational replay tooling;
 - operator RBAC for manual processing;
-- stale claim recovery;
-- retry scheduling;
-- maximum retry attempts;
-- dead-letter workflows;
+- worker-backed webhook processing;
+- automatic enqueue after webhook ingestion;
 - structured security event alerts;
 - multi-provider processing policies;
 - entitlement propagation;
 - production worker isolation.
 
 The following operational controls build on the implemented internal
-reconciliation, identity, transaction, and concurrency boundaries but are not
-yet part of the current reconciliation boundary:
+reconciliation, identity, transaction, concurrency, and queue-foundation
+boundaries but are not yet part of the current reconciliation boundary:
 
 - background reconciliation scheduling;
 - operator-triggered reconciliation;
@@ -927,10 +986,7 @@ yet part of the current reconciliation boundary:
 - reconciliation audit history;
 - persisted reconciliation attempts;
 - provider rate-limit coordination;
-- retry scheduling;
-- exponential backoff;
-- jitter;
-- dead-letter handling;
+- worker-backed reconciliation execution;
 - structured reconciliation alerts;
 - provider-state dashboards;
 - multi-provider reconciliation policy;

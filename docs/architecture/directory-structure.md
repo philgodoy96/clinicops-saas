@@ -63,6 +63,7 @@ clinicops-saas/
 │       ├── db/
 │       ├── identity/
 │       ├── invitations/
+│       ├── jobs/
 │       ├── tenancy/
 │       └── main.py
 │
@@ -79,7 +80,10 @@ clinicops-saas/
 └── README.md
 ```
 
-The current tree reflects implemented capabilities only. It does not yet include a worker entry point, durable jobs package, audit package, patients package, professionals package, Dockerfile, ADR directory, or dedicated security-test directory.
+The current tree reflects implemented capabilities only. It includes the durable
+background-job queue package. It does not yet include a worker entry point,
+audit package, patients package, professionals package, Dockerfile, ADR
+directory, or dedicated security-test directory.
 
 ---
 
@@ -112,7 +116,7 @@ clinicops-saas/
 │       ├── identity/
 │       ├── invitations/
 │       ├── tenancy/
-│       ├── jobs/            # Background Jobs & Worker
+│       ├── jobs/            # durable queue foundation implemented; worker runtime remains target
 │       ├── audit/           # Durable Audit Logs
 │       ├── patients/        # Patients Domain
 │       ├── professionals/   # Professionals Domain
@@ -137,9 +141,16 @@ clinicops-saas/
 
 This is the target structure for remaining milestones.
 
-Directories and files must be introduced only when their corresponding responsibilities exist.
+The durable `jobs/` queue foundation already exists in the current tree. The
+worker runtime entry point, Docker packaging, audit package, patients package,
+and professionals package remain target introductions.
 
-Exact internal filenames inside `jobs/`, `audit/`, `patients/`, and `professionals/` remain subject to system design approval for each milestone.
+Directories and files must be introduced only when their corresponding
+responsibilities exist.
+
+Exact internal filenames inside `audit/`, `patients/`, and `professionals/`
+remain subject to system design approval for each milestone. Worker-runtime
+packages under `jobs/` may evolve when the worker composition root lands.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -212,7 +223,7 @@ Examples:
 - tenant isolation;
 - authentication and authorization;
 - billing and webhook processing;
-- background job execution once that milestone lands.
+- background job queue foundation and future worker execution.
 
 #### `docs/adr/`
 
@@ -289,7 +300,8 @@ It must not contain business workflows.
 
 ### `worker.py`
 
-Target entry point for the background worker process introduced by the Background Jobs & Worker milestone.
+Target entry point for the background worker process that remains under the
+Background Jobs & Worker milestone.
 
 Intended responsibilities include:
 
@@ -301,7 +313,8 @@ Intended responsibilities include:
 
 It must not duplicate business logic from application services.
 
-The worker runtime does not exist in the current repository tree.
+The durable queue foundation already exists under `src/clinicops/jobs/`. The
+worker runtime entry point does not exist in the current repository tree.
 
 ---
 
@@ -388,16 +401,20 @@ authorization
 tenancy
 invitations
 billing
+jobs
 ```
 
 Remaining current-release packages are expected to include:
 
 ```text
-jobs
 audit
 patients
 professionals
 ```
+
+The `jobs` package currently owns the durable PostgreSQL-backed queue
+foundation. The worker runtime entry point and billing handler integration
+remain target work under the same macro-milestone.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -766,9 +783,11 @@ entitlement enforcement
 invoice lifecycles
 ```
 
-Background Jobs will later operationalize webhook processing and
-reconciliation. Real provider adapters, entitlements, and invoices remain
-intentionally deferred beyond the current release.
+The durable background-job queue foundation exists under `src/clinicops/jobs/`.
+Background Jobs & Worker will later operationalize webhook processing and
+reconciliation through the worker runtime. Real provider adapters,
+entitlements, and invoices remain intentionally deferred beyond the current
+release.
 
 Billing models are registered centrally through:
 
@@ -788,6 +807,77 @@ src/clinicops/billing/
 It does not introduce a parallel `modules/billing/` tree.
 
 It does not introduce a parallel `src/clinicops/billing/api/` tree.
+
+---
+
+## Jobs Package
+
+The implemented jobs package provides the durable PostgreSQL-backed queue
+foundation under `src/clinicops`.
+
+```text
+src/clinicops/jobs/
+├── contracts.py
+├── enums.py
+├── exceptions.py
+├── models.py
+├── retry.py
+├── repositories/
+│   └── background_job_repository.py
+└── services/
+    ├── enqueue_background_job.py
+    ├── claim_background_jobs.py
+    ├── complete_background_job.py
+    ├── fail_background_job.py
+    └── recover_stale_background_jobs.py
+```
+
+Capability-level ownership:
+
+```text
+models.py
+    -> BackgroundJob persistence and lifecycle constraints
+
+enums.py
+    -> stable job lifecycle identifiers
+
+contracts.py
+    -> typed enqueue, claim, completion, failure, and recovery inputs
+
+exceptions.py
+    -> queue-foundation application errors
+
+retry.py
+    -> capped exponential backoff with equal jitter
+
+repositories/
+    -> availability selection, claim locking, and persistence flushes
+
+services/
+    -> idempotent enqueueing, concurrent claiming, completion, failure,
+       and stale-processing recovery
+```
+
+The package does not currently contain:
+
+```text
+worker.py
+handler registry
+billing webhook job handlers
+reconciliation job handlers
+automatic enqueue integration from billing
+worker-specific settings
+```
+
+Those responsibilities remain target work for the worker runtime and billing
+integration slices. Detailed queue semantics live in
+`docs/architecture/background-jobs.md`.
+
+Jobs models are registered centrally through:
+
+```text
+src/clinicops/db/models.py
+```
 
 ---
 
@@ -897,7 +987,7 @@ Examples:
 - invitation acceptance transactions;
 - tenant-scoped patient access once Patients lands;
 - duplicate webhook handling;
-- background job acquisition once Jobs lands;
+- background job enqueue, claim, completion, failure, and concurrency behavior;
 - audit persistence once Durable Audit Logs lands.
 
 ---
