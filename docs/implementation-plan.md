@@ -71,6 +71,10 @@ Professionals Domain
 Final Hardening & Portfolio Release
 ```
 
+Background Jobs & Worker remains the active macro-milestone. Its durable queue
+foundation is complete; worker runtime and billing integration remain
+incomplete.
+
 This documentation-alignment work corrects public project scope. It is not itself a functional milestone.
 
 ---
@@ -79,27 +83,47 @@ This documentation-alignment work corrects public project scope. It is not itsel
 
 ### Objective
 
-Introduce PostgreSQL-backed durable jobs and a separate worker process that can claim, execute, retry, and recover asynchronous work safely.
+Introduce PostgreSQL-backed durable jobs and a separate worker process that can
+claim, execute, retry, and recover asynchronous work safely.
 
-### Primary Deliverables
+PostgreSQL is the deliberate source of truth for both domain state and queue
+coordination. The durable queue foundation is implemented. The worker runtime
+and billing integration remain incomplete within this same macro-milestone.
 
-- durable job persistence;
-- transactional enqueueing;
-- typed job payloads;
+### Completed foundation
+
+The following queue-foundation slices are implemented:
+
+- `BackgroundJob` persistence and migration `0008_add_background_jobs`;
+- PostgreSQL JSONB payloads with payload versioning;
+- lifecycle states, database constraints, and partial idempotency-key
+  uniqueness;
+- idempotent transactional enqueueing with caller-owned commit;
+- semantic replay comparison, availability scheduling, and priority ordering;
 - safe concurrent claiming with `FOR UPDATE SKIP LOCKED`;
-- retry scheduling;
-- exponential backoff;
-- jitter;
-- maximum attempts;
-- dead-letter behavior;
-- stale-processing recovery;
-- worker runtime;
+- claim tokens, worker ownership, and processing leases;
+- successful completion, retryable failure, and terminal failure handling;
+- exponential backoff with equal jitter and a maximum-delay cap;
+- dead-letter state and stale-processing recovery;
+- bounded and sanitized failure metadata;
+- unit tests, PostgreSQL integration tests, and concurrency and failure-path
+  tests;
+- architecture documentation in `docs/architecture/background-jobs.md`.
+
+### Remaining deliverables
+
+The following slices remain inside Background Jobs & Worker:
+
+- worker composition root and continuous execution loop;
+- handler registry;
+- transactional webhook-job enqueue integration;
+- billing webhook-processing handler;
+- reconciliation handler or scheduling decision;
 - graceful shutdown;
-- worker logging;
-- correlation propagation;
-- billing webhook-processing jobs;
-- billing reconciliation jobs;
-- Docker and operational worker integration.
+- worker-specific settings;
+- Docker and Compose worker integration;
+- end-to-end webhook-to-job processing tests;
+- operational worker documentation.
 
 ### Engineering Risks
 
@@ -113,21 +137,27 @@ Introduce PostgreSQL-backed durable jobs and a separate worker process that can 
 
 ### Test Focus
 
-- durable enqueue;
-- concurrent acquisition;
-- retry scheduling;
-- maximum attempts;
-- dead-letter behavior;
-- stale-processing recovery;
-- correlation propagation;
-- idempotent billing job handlers.
+Completed foundation coverage includes durable enqueue, concurrent
+acquisition, retry scheduling, maximum attempts, dead-letter behavior, and
+stale-processing recovery.
+
+Remaining coverage must include:
+
+- correlation propagation through the worker runtime;
+- idempotent billing job handlers;
+- end-to-end webhook-to-job processing.
 
 ### Completion Criteria
 
+This macro-milestone is complete when:
+
 - jobs are durably stored;
-- multiple workers coordinate safely;
+- multiple workers coordinate safely through the worker runtime;
 - failures remain inspectable;
-- billing webhook processing and reconciliation can execute asynchronously through the worker.
+- billing webhook processing and reconciliation can execute asynchronously
+  through the worker.
+
+The durable queue foundation alone does not complete this milestone.
 
 ---
 
@@ -410,16 +440,18 @@ Roadmap changes should preserve the project's primary goals:
 
 ## 13. Next Milestone
 
-The next implementation milestone is Background Jobs & Worker.
+The next implementation milestone remains Background Jobs & Worker.
 
-It will introduce:
+The durable PostgreSQL-backed queue foundation is already in place. Remaining
+work in this milestone introduces:
 
-- PostgreSQL-backed durable jobs;
-- transactional enqueueing;
-- safe concurrent claiming;
-- retry and dead-letter behavior;
-- worker runtime;
-- billing webhook-processing and reconciliation jobs;
-- Docker and operational worker integration.
+- worker composition root and execution loop;
+- handler registry;
+- transactional webhook-job enqueue integration;
+- billing webhook-processing and reconciliation handlers;
+- graceful shutdown and worker settings;
+- Docker and Compose worker integration;
+- end-to-end webhook-to-job processing tests;
+- operational worker documentation.
 
 Durable Audit Logs, Patients, Professionals, and Final Hardening follow in that order.
