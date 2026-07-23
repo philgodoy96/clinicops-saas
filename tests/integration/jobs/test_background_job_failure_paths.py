@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from clinicops.db.session import get_engine
@@ -46,7 +46,8 @@ def _queued_job(
         status=BackgroundJobStatus.QUEUED,
         idempotency_key=f"failure-path-test:{uuid4()}",
         priority=_TEST_JOB_PRIORITY,
-        available_at=(datetime.now(UTC) - timedelta(minutes=1)),
+        # Stay invisible until the test opens the claim window on DB time.
+        available_at=(datetime.now(UTC) + timedelta(hours=1)),
         processing_attempt_count=0,
         max_attempts=max_attempts,
         correlation_id=f"correlation-{uuid4()}",
@@ -59,6 +60,44 @@ def _retry_policy() -> BackgroundJobRetryPolicy:
         maximum_delay=timedelta(hours=1),
         random_value_provider=lambda: 0.0,
     )
+
+
+def _clear_competing_claimable_jobs(owned_job_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        session.execute(
+            delete(BackgroundJob).where(
+                BackgroundJob.id != owned_job_id,
+                BackgroundJob.status.in_(
+                    (
+                        BackgroundJobStatus.QUEUED,
+                        BackgroundJobStatus.RETRY_SCHEDULED,
+                    )
+                ),
+                BackgroundJob.available_at <= func.now(),
+                (BackgroundJob.processing_attempt_count < BackgroundJob.max_attempts),
+            )
+        )
+        session.commit()
+
+
+def _open_claim_window(job_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        job = session.get(BackgroundJob, job_id)
+        assert job is not None
+        assert job.status in {
+            BackgroundJobStatus.QUEUED,
+            BackgroundJobStatus.RETRY_SCHEDULED,
+        }
+
+        database_now = session.execute(select(func.now())).scalar_one()
+        job.priority = _TEST_JOB_PRIORITY
+        job.available_at = database_now - timedelta(hours=1)
+        session.commit()
+
+
+def _prepare_owned_job_for_claim(job_id: UUID) -> None:
+    _clear_competing_claimable_jobs(job_id)
+    _open_claim_window(job_id)
 
 
 def _claim_one(
@@ -89,7 +128,8 @@ def _make_available_for_retry(
     assert job is not None
     assert job.status is BackgroundJobStatus.RETRY_SCHEDULED
 
-    job.available_at = datetime.now(UTC) - timedelta(seconds=1)
+    database_now = session.execute(select(func.now())).scalar_one()
+    job.available_at = database_now - timedelta(seconds=1)
     session.commit()
 
 
@@ -109,6 +149,8 @@ def test_retryable_failure_can_later_succeed() -> None:
         job_id = job.id
 
     try:
+        _prepare_owned_job_for_claim(job_id)
+
         with Session(engine) as session:
             first_claim = _claim_one(
                 session,
@@ -140,6 +182,7 @@ def test_retryable_failure_can_later_succeed() -> None:
                 session,
                 job_id=job_id,
             )
+            _clear_competing_claimable_jobs(job_id)
 
             second_claim = _claim_one(
                 session,
@@ -194,6 +237,8 @@ def test_retryable_failures_dead_letter_at_maximum_attempts() -> None:
         job_id = job.id
 
     try:
+        _prepare_owned_job_for_claim(job_id)
+
         with Session(engine) as session:
             first_claim = _claim_one(
                 session,
@@ -223,6 +268,7 @@ def test_retryable_failures_dead_letter_at_maximum_attempts() -> None:
                 session,
                 job_id=job_id,
             )
+            _clear_competing_claimable_jobs(job_id)
 
             second_claim = _claim_one(
                 session,
@@ -279,6 +325,8 @@ def test_terminal_failure_dead_letters_without_extra_attempts() -> None:
         job_id = job.id
 
     try:
+        _prepare_owned_job_for_claim(job_id)
+
         with Session(engine) as session:
             claim = _claim_one(
                 session,
@@ -332,6 +380,8 @@ def test_failure_transition_rollback_preserves_active_claim() -> None:
         job_id = job.id
 
     try:
+        _prepare_owned_job_for_claim(job_id)
+
         with Session(engine) as claim_session:
             claim = _claim_one(
                 claim_session,
