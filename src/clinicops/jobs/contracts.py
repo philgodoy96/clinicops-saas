@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from clinicops.jobs.enums import BackgroundJobStatus
+from clinicops.jobs.enums import BackgroundJobFailureKind, BackgroundJobStatus
 
 type JSONScalar = str | int | float | bool | None
 type JSONValue = JSONScalar | list[JSONValue] | dict[str, JSONValue]
@@ -56,11 +56,51 @@ class ClaimedBackgroundJob:
     origin_request_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class CompleteBackgroundJobCommand:
+    job_id: UUID
+    worker_id: str
+    claim_token: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedBackgroundJob:
+    job_id: UUID
+    status: BackgroundJobStatus
+    completed_at: datetime
+    processing_attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FailBackgroundJobCommand:
+    job_id: UUID
+    worker_id: str
+    claim_token: UUID
+    failure_kind: BackgroundJobFailureKind
+    error_code: str
+    error_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class FailedBackgroundJob:
+    job_id: UUID
+    status: BackgroundJobStatus
+    processing_attempt_count: int
+    max_attempts: int
+    available_at: datetime
+    last_failed_at: datetime
+    dead_lettered_at: datetime | None
+
+
 __all__ = [
     "ClaimBackgroundJobsCommand",
     "ClaimedBackgroundJob",
+    "CompleteBackgroundJobCommand",
+    "CompletedBackgroundJob",
     "EnqueueBackgroundJobCommand",
     "EnqueuedBackgroundJob",
+    "FailBackgroundJobCommand",
+    "FailedBackgroundJob",
     "JSONObject",
     "JSONScalar",
     "JSONValue",
