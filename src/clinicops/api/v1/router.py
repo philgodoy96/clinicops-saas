@@ -1,5 +1,8 @@
 from fastapi import APIRouter
 
+from clinicops.api.v1.audit_logs import (
+    router as audit_logs_router,
+)
 from clinicops.api.v1.authentication.routes import (
     router as authentication_router,
 )
@@ -27,5 +30,6 @@ router.include_router(
 )
 router.include_router(invitation_router)
 router.include_router(tenant_router)
+router.include_router(audit_logs_router)
 router.include_router(billing_router)
 router.include_router(billing_webhook_router)

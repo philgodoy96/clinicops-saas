@@ -3,6 +3,7 @@ from clinicops.audit.exceptions import AuditLogError
 
 class AuditLogAccessDeniedError(AuditLogError):
     code = "audit_log_access_denied"
+    public_message = "The current membership cannot read tenant audit logs."
 
     def __init__(self) -> None:
         super().__init__("The current membership cannot read tenant audit logs.")
