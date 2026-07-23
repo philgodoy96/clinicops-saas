@@ -20,5 +20,63 @@ services:
       retries: 10
       start_period: 5s
 
+  api:
+    image: clinicops:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    command:
+      [
+        "uvicorn",
+        "clinicops.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
+    env_file:
+      - .env
+    environment:
+      CLINICOPS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-clinicops}:${POSTGRES_PASSWORD:-clinicops}@postgres:5432/${POSTGRES_DB:-clinicops}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    image: clinicops:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    command:
+      [
+        "python",
+        "-m",
+        "clinicops.worker",
+      ]
+    env_file:
+      - .env
+    environment:
+      CLINICOPS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-clinicops}:${POSTGRES_PASSWORD:-clinicops}@postgres:5432/${POSTGRES_DB:-clinicops}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 300s
+
 volumes:
   clinicops_postgres_data:
