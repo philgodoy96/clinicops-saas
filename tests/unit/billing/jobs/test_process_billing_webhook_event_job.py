@@ -1,14 +1,28 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
+from clinicops.billing.enums import (
+    BillingWebhookEventStatus,
+    BillingWebhookEventType,
+    BillingWebhookProcessingOutcome,
+)
 from clinicops.billing.jobs.constants import (
     BILLING_WEBHOOK_PROCESS_JOB_TYPE,
 )
 from clinicops.billing.jobs.process_billing_webhook_event import (
     ProcessBillingWebhookEventJobHandler,
+    SqlAlchemyBillingWebhookEventProcessor,
+)
+from clinicops.billing.webhooks.process import (
+    ProcessBillingWebhookEventCommand,
+    ProcessBillingWebhookEventService,
+    ProcessedBillingWebhookEvent,
 )
 from clinicops.jobs.contracts import (
     ClaimedBackgroundJob,
@@ -35,6 +49,79 @@ class RecordingWebhookProcessor:
 
         if self.error is not None:
             raise self.error
+
+
+class RecordingSession:
+    def __init__(self) -> None:
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.close_count = 0
+        self.enter_count = 0
+
+    def __enter__(self) -> "RecordingSession":
+        self.enter_count += 1
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc: object,
+        traceback: object,
+    ) -> Literal[False]:
+        del exc_type, exc, traceback
+        self.close()
+        return False
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class RecordingSessionFactory:
+    def __init__(self) -> None:
+        self.sessions: list[RecordingSession] = []
+
+    def __call__(self) -> RecordingSession:
+        session = RecordingSession()
+        self.sessions.append(session)
+        return session
+
+
+class RecordingProcessBillingWebhookEventService(ProcessBillingWebhookEventService):
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.error = error
+        self.received_sessions: list[object] = []
+        self.received_commands: list[ProcessBillingWebhookEventCommand] = []
+
+    def execute(
+        self,
+        session: Session,
+        command: ProcessBillingWebhookEventCommand,
+    ) -> ProcessedBillingWebhookEvent:
+        self.received_sessions.append(session)
+        self.received_commands.append(command)
+
+        if self.error is not None:
+            raise self.error
+
+        return ProcessedBillingWebhookEvent(
+            webhook_event_id=command.webhook_event_id,
+            provider_event_id="evt_test",
+            event_type=BillingWebhookEventType.SUBSCRIPTION_RENEWED,
+            status=BillingWebhookEventStatus.PROCESSED,
+            outcome=BillingWebhookProcessingOutcome.APPLIED,
+            subscription_id=uuid4(),
+            processing_attempt_count=1,
+        )
 
 
 def _claimed_job(
@@ -167,3 +254,103 @@ def test_handler_requires_callable_processor() -> None:
         ProcessBillingWebhookEventJobHandler(
             object()  # type: ignore[arg-type]
         )
+
+
+def test_sqlalchemy_processor_creates_fresh_session_and_invokes_service() -> None:
+    webhook_event_id = uuid4()
+    session_factory = RecordingSessionFactory()
+    process_service = RecordingProcessBillingWebhookEventService()
+    processor = SqlAlchemyBillingWebhookEventProcessor(
+        cast(Callable[[], Session], session_factory),
+        process_service=process_service,
+    )
+
+    processor(webhook_event_id)
+
+    assert len(session_factory.sessions) == 1
+    session = session_factory.sessions[0]
+    assert session.enter_count == 1
+    assert session.close_count == 1
+    assert len(process_service.received_sessions) == 1
+    assert process_service.received_sessions[0] is session
+    assert len(process_service.received_commands) == 1
+    assert process_service.received_commands[0] == (
+        ProcessBillingWebhookEventCommand(
+            webhook_event_id=webhook_event_id,
+        )
+    )
+
+
+def test_sqlalchemy_processor_commits_once_after_success() -> None:
+    session_factory = RecordingSessionFactory()
+    process_service = RecordingProcessBillingWebhookEventService()
+    processor = SqlAlchemyBillingWebhookEventProcessor(
+        cast(Callable[[], Session], session_factory),
+        process_service=process_service,
+    )
+
+    processor(uuid4())
+
+    session = session_factory.sessions[0]
+    assert session.commit_count == 1
+    assert session.rollback_count == 0
+
+
+def test_sqlalchemy_processor_rolls_back_and_reraises_on_failure() -> None:
+    unexpected_error = RuntimeError("processing failed")
+    session_factory = RecordingSessionFactory()
+    process_service = RecordingProcessBillingWebhookEventService(
+        error=unexpected_error,
+    )
+    processor = SqlAlchemyBillingWebhookEventProcessor(
+        cast(Callable[[], Session], session_factory),
+        process_service=process_service,
+    )
+
+    with pytest.raises(RuntimeError) as exception_info:
+        processor(uuid4())
+
+    session = session_factory.sessions[0]
+    assert exception_info.value is unexpected_error
+    assert session.rollback_count == 1
+    assert session.commit_count == 0
+    assert session.close_count == 1
+
+
+def test_sqlalchemy_processor_uses_separate_sessions_per_call() -> None:
+    session_factory = RecordingSessionFactory()
+    process_service = RecordingProcessBillingWebhookEventService()
+    processor = SqlAlchemyBillingWebhookEventProcessor(
+        cast(Callable[[], Session], session_factory),
+        process_service=process_service,
+    )
+
+    first_event_id = uuid4()
+    second_event_id = uuid4()
+
+    processor(first_event_id)
+    processor(second_event_id)
+
+    assert len(session_factory.sessions) == 2
+    assert len(process_service.received_sessions) == 2
+    assert process_service.received_sessions[0] is (session_factory.sessions[0])
+    assert process_service.received_sessions[1] is (session_factory.sessions[1])
+    assert process_service.received_sessions[0] is not (process_service.received_sessions[1])
+    assert [command.webhook_event_id for command in process_service.received_commands] == [
+        first_event_id,
+        second_event_id,
+    ]
+
+
+def test_sqlalchemy_processor_defaults_to_real_processing_service() -> None:
+    session_factory = RecordingSessionFactory()
+
+    processor = SqlAlchemyBillingWebhookEventProcessor(
+        cast(Callable[[], Session], session_factory),
+    )
+
+    assert isinstance(
+        processor._process_service,
+        ProcessBillingWebhookEventService,
+    )
+    assert type(processor._process_service) is (ProcessBillingWebhookEventService)
