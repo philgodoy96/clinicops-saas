@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from clinicops.jobs.runtime.worker import (
     BackgroundWorker,
     SqlAlchemyBackgroundJobRuntimeStore,
     WorkerIterationOutcome,
+    WorkerIterationResult,
 )
 
 _TEST_JOB_PRIORITY = 2_147_483_647
@@ -64,6 +65,57 @@ class RetryableFailureHandler:
         )
 
 
+def _clear_competing_claimable_jobs(owned_job_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        session.execute(
+            delete(BackgroundJob).where(
+                BackgroundJob.id != owned_job_id,
+                BackgroundJob.status.in_(
+                    (
+                        BackgroundJobStatus.QUEUED,
+                        BackgroundJobStatus.RETRY_SCHEDULED,
+                    )
+                ),
+                BackgroundJob.available_at <= func.now(),
+                (BackgroundJob.processing_attempt_count < BackgroundJob.max_attempts),
+            )
+        )
+        session.commit()
+
+
+def _open_claim_window(job_id: UUID) -> None:
+    with Session(get_engine()) as session:
+        job = session.get(BackgroundJob, job_id)
+        assert job is not None
+        assert job.status in {
+            BackgroundJobStatus.QUEUED,
+            BackgroundJobStatus.RETRY_SCHEDULED,
+        }
+
+        database_now = session.execute(select(func.now())).scalar_one()
+        job.priority = _TEST_JOB_PRIORITY
+        job.available_at = database_now - timedelta(hours=1)
+        session.commit()
+
+
+def _run_owned_job(
+    *,
+    engine: Engine,
+    registry: JobHandlerRegistry,
+    job_id: UUID,
+) -> WorkerIterationResult:
+    _clear_competing_claimable_jobs(job_id)
+    _open_claim_window(job_id)
+
+    result = _worker(
+        engine=engine,
+        registry=registry,
+    ).run_once()
+
+    assert result.job_id == job_id
+    return result
+
+
 def _queued_job(
     *,
     job_type: str,
@@ -79,7 +131,9 @@ def _queued_job(
         status=BackgroundJobStatus.QUEUED,
         idempotency_key=f"worker-runtime:{uuid4()}",
         priority=_TEST_JOB_PRIORITY,
-        available_at=(datetime.now(UTC) - timedelta(minutes=1)),
+        # Keep the job invisible to any concurrent claimant until the test
+        # opens the claim window against PostgreSQL's clock.
+        available_at=(datetime.now(UTC) + timedelta(hours=1)),
         processing_attempt_count=0,
         max_attempts=max_attempts,
         correlation_id=f"correlation-{uuid4()}",
@@ -153,10 +207,11 @@ def test_worker_commits_claim_before_handler_execution() -> None:
         job_id = job.id
 
     try:
-        result = _worker(
+        result = _run_owned_job(
             engine=engine,
             registry=JobHandlerRegistry([handler]),
-        ).run_once()
+            job_id=job_id,
+        )
 
         assert result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert result.job_id == job_id
@@ -188,10 +243,11 @@ def test_worker_records_retryable_handler_failure() -> None:
         job_id = job.id
 
     try:
-        result = _worker(
+        result = _run_owned_job(
             engine=engine,
             registry=JobHandlerRegistry([RetryableFailureHandler()]),
-        ).run_once()
+            job_id=job_id,
+        )
 
         assert result.outcome is WorkerIterationOutcome.RETRY_SCHEDULED
 
@@ -223,10 +279,11 @@ def test_worker_dead_letters_unknown_job_type() -> None:
         job_id = job.id
 
     try:
-        result = _worker(
+        result = _run_owned_job(
             engine=engine,
             registry=JobHandlerRegistry(),
-        ).run_once()
+            job_id=job_id,
+        )
 
         assert result.outcome is WorkerIterationOutcome.DEAD_LETTERED
 
@@ -257,6 +314,8 @@ def test_worker_recovers_expired_processing_job() -> None:
         previous_claim_token = job.claim_token
 
     try:
+        _clear_competing_claimable_jobs(job_id)
+
         result = _worker(
             engine=engine,
             registry=JobHandlerRegistry(),
