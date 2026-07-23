@@ -2,11 +2,20 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import (
+    RecordAuditLogCommand,
+    RecordedAuditLog,
+)
+from clinicops.audit.enums import AuditActorType, AuditSource
+from clinicops.audit.models import AuditLogEntry
 from clinicops.db.session import get_engine
 from clinicops.identity.models import User, UserStatus
 from clinicops.tenancy.exceptions import (
@@ -30,6 +39,58 @@ from clinicops.tenancy.services.membership_administration import (
 from clinicops.tenancy.services.remove_membership import (
     RemoveMembershipService,
 )
+
+
+class SimulatedAuditRecordingError(RuntimeError):
+    """Represent a deterministic audit recording failure."""
+
+
+class RecordingAuditRecorder:
+    """Capture audit commands without touching the database."""
+
+    def __init__(self) -> None:
+        self.sessions: list[Session] = []
+        self.commands: list[RecordAuditLogCommand] = []
+
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        self.sessions.append(session)
+        self.commands.append(command)
+
+        return RecordedAuditLog(
+            audit_log_id=uuid4(),
+            created=True,
+            recorded_at=datetime.now(UTC),
+        )
+
+
+class FailingAuditRecorder:
+    """Raise after the membership delete has already been flushed."""
+
+    def record(
+        self,
+        session: Session,
+        command: RecordAuditLogCommand,
+    ) -> RecordedAuditLog:
+        raise SimulatedAuditRecordingError
+
+
+def audit_context(
+    *,
+    user_id: UUID,
+    role: str = TenantRole.OWNER.value,
+) -> AuditRecordingContext:
+    """Build one immutable HTTP audit context."""
+
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role=role,
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +227,10 @@ def test_remove_membership_deletes_only_tenant_relationship(
     )
     target_user_id = scenario.target.id
     target_membership_id = scenario.target_membership.id
-    service = RemoveMembershipService()
+    removed_role = scenario.target_membership.role
+    context = audit_context(user_id=scenario.actor.id)
+    recorder = RecordingAuditRecorder()
+    service = RemoveMembershipService(audit_recorder=recorder)
 
     result = service.execute(
         db_session,
@@ -174,6 +238,7 @@ def test_remove_membership_deletes_only_tenant_relationship(
             tenant_id=scenario.tenant.id,
             actor_user_id=scenario.actor.id,
             membership_id=target_membership_id,
+            audit_context=context,
         ),
     )
 
@@ -182,6 +247,29 @@ def test_remove_membership_deletes_only_tenant_relationship(
     assert result.user_id == target_user_id
     assert db_session.get(Membership, target_membership_id) is None
     assert db_session.get(User, target_user_id) is not None
+    assert recorder.sessions == [db_session]
+    assert len(recorder.commands) == 1
+
+    command = recorder.commands[0]
+
+    assert command.action == AuditAction.MEMBERSHIP_REMOVED.value
+    assert command.resource_type == AuditResourceType.MEMBERSHIP.value
+    assert command.resource_id == str(target_membership_id)
+    assert command.tenant_id == scenario.tenant.id
+    assert command.actor.actor_type is AuditActorType.USER
+    assert command.actor.user_id == scenario.actor.id
+    assert command.actor.role == TenantRole.OWNER.value
+    assert command.source is AuditSource.HTTP
+    assert command.request_id == context.request_id
+    assert command.correlation_id == context.correlation_id
+    assert command.metadata_version == 1
+    assert command.idempotency_key is None
+    assert command.metadata == {
+        "target_user_id": str(target_user_id),
+        "removed_role": removed_role.value,
+    }
+    assert "email" not in command.metadata
+    assert "name" not in command.metadata
 
 
 def test_remove_membership_preserves_other_tenant_membership(
@@ -224,6 +312,7 @@ def test_remove_membership_preserves_other_tenant_membership(
             tenant_id=scenario.tenant.id,
             actor_user_id=scenario.actor.id,
             membership_id=scenario.target_membership.id,
+            audit_context=audit_context(user_id=scenario.actor.id),
         ),
     )
 
@@ -251,7 +340,8 @@ def test_remove_membership_protects_owner(
         actor_role=TenantRole.ADMIN,
         target_is_owner=True,
     )
-    service = RemoveMembershipService()
+    recorder = RecordingAuditRecorder()
+    service = RemoveMembershipService(audit_recorder=recorder)
 
     with pytest.raises(MembershipOwnerProtectedError):
         service.execute(
@@ -260,6 +350,10 @@ def test_remove_membership_protects_owner(
                 tenant_id=scenario.tenant.id,
                 actor_user_id=scenario.actor.id,
                 membership_id=scenario.target_membership.id,
+                audit_context=audit_context(
+                    user_id=scenario.actor.id,
+                    role=TenantRole.ADMIN.value,
+                ),
             ),
         )
 
@@ -270,6 +364,7 @@ def test_remove_membership_protects_owner(
         )
         is not None
     )
+    assert recorder.commands == []
 
 
 def test_remove_membership_rejects_self_management(
@@ -288,6 +383,7 @@ def test_remove_membership_rejects_self_management(
                 tenant_id=scenario.tenant.id,
                 actor_user_id=scenario.actor.id,
                 membership_id=scenario.actor_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
             ),
         )
 
@@ -332,6 +428,7 @@ def test_remove_membership_revalidates_actor_authorization(
                 tenant_id=scenario.tenant.id,
                 actor_user_id=scenario.actor.id,
                 membership_id=scenario.target_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
             ),
         )
 
@@ -358,6 +455,7 @@ def test_remove_membership_rejects_cross_tenant_target(
                 tenant_id=source.tenant.id,
                 actor_user_id=source.actor.id,
                 membership_id=foreign.target_membership.id,
+                audit_context=audit_context(user_id=source.actor.id),
             ),
         )
 
@@ -386,6 +484,7 @@ def test_remove_membership_rejects_disabled_tenant(
                 tenant_id=scenario.tenant.id,
                 actor_user_id=scenario.actor.id,
                 membership_id=scenario.target_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
             ),
         )
 
@@ -410,6 +509,7 @@ def test_remove_membership_rejects_missing_tenant(
                 tenant_id=uuid4(),
                 actor_user_id=uuid4(),
                 membership_id=uuid4(),
+                audit_context=audit_context(user_id=uuid4()),
             ),
         )
 
@@ -431,7 +531,89 @@ def test_successful_removal_does_not_commit(
                 tenant_id=scenario.tenant.id,
                 actor_user_id=scenario.actor.id,
                 membership_id=scenario.target_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
             ),
         )
 
     commit.assert_not_called()
+
+
+def test_remove_membership_and_audit_commit_together(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    context = audit_context(user_id=scenario.actor.id)
+    tenant_id = scenario.tenant.id
+    membership_id = scenario.target_membership.id
+    target_user_id = scenario.target.id
+    actor_user_id = scenario.actor.id
+    removed_role = scenario.target_membership.role
+
+    RemoveMembershipService().execute(
+        db_session,
+        RemoveMembershipCommand(
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            membership_id=membership_id,
+            audit_context=context,
+        ),
+    )
+    db_session.commit()
+
+    try:
+        with Session(get_engine()) as verification_session:
+            assert verification_session.get(Membership, membership_id) is None
+            stored_audit = verification_session.scalar(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.tenant_id == tenant_id,
+                    AuditLogEntry.action == AuditAction.MEMBERSHIP_REMOVED.value,
+                )
+            )
+
+        assert stored_audit is not None
+        assert stored_audit.resource_id == str(membership_id)
+        assert stored_audit.actor_user_id == actor_user_id
+        assert stored_audit.request_id == context.request_id
+        assert stored_audit.correlation_id == context.correlation_id
+        assert stored_audit.event_metadata == {
+            "target_user_id": str(target_user_id),
+            "removed_role": removed_role.value,
+        }
+    finally:
+        with Session(get_engine()) as cleanup_session:
+            cleanup_session.execute(
+                delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id)
+            )
+            cleanup_session.execute(delete(Membership).where(Membership.tenant_id == tenant_id))
+            cleanup_session.execute(delete(Tenant).where(Tenant.id == tenant_id))
+            cleanup_session.execute(
+                delete(User).where(User.id.in_([actor_user_id, target_user_id]))
+            )
+            cleanup_session.commit()
+
+
+def test_audit_failure_prevents_membership_removal_commit(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    membership_id = scenario.target_membership.id
+    service = RemoveMembershipService(audit_recorder=FailingAuditRecorder())
+
+    with (
+        patch.object(db_session, "commit", wraps=db_session.commit) as commit,
+        patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback,
+        pytest.raises(SimulatedAuditRecordingError),
+    ):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=membership_id,
+                audit_context=audit_context(user_id=scenario.actor.id),
+            ),
+        )
+
+    commit.assert_not_called()
+    rollback.assert_not_called()
+    assert db_session.get(Membership, membership_id) is None

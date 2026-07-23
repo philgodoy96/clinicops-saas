@@ -4,6 +4,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.identity.exceptions import (
     UserDisabledError,
     UserNotFoundError,
@@ -26,6 +30,7 @@ class CreateTenantCommand:
 
     name: str
     owner_user_id: UUID
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +51,14 @@ class CreateTenantService:
         self,
         user_repository: UserRepository | None = None,
         tenant_repository: TenantRepository | None = None,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._user_repository = user_repository if user_repository is not None else UserRepository()
         self._tenant_repository = (
             tenant_repository if tenant_repository is not None else TenantRepository()
+        )
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
         )
 
     def execute(
@@ -80,6 +89,26 @@ class CreateTenantService:
         )
 
         self._tenant_repository.add_and_flush(session, tenant)
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            session,
+            RecordAuditLogCommand(
+                tenant_id=tenant.id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.TENANT_CREATED.value,
+                resource_type=AuditResourceType.TENANT.value,
+                resource_id=str(tenant.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "tenant_name": tenant.name,
+                },
+                idempotency_key=f"tenant-created:{tenant.id}",
+                request_id=audit_context.request_id,
+            ),
+        )
 
         return CreatedTenant(
             id=tenant.id,

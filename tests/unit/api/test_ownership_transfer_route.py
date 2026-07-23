@@ -13,6 +13,8 @@ from clinicops.api.errors import (
     register_exception_handlers,
 )
 from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
 from clinicops.api.v1.tenants.dependencies import (
@@ -24,6 +26,7 @@ from clinicops.api.v1.tenants.schemas import (
     TransferredTenantOwnershipResponse,
     TransferTenantOwnershipRequest,
 )
+from clinicops.audit.enums import AuditSource
 from clinicops.authorization.services.resolve_tenant_context import (
     TenantContext,
 )
@@ -202,12 +205,18 @@ def test_owner_context_translates_command_and_commits() -> None:
         service,
         transferred,
     ) = build_test_app()
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
 
     with TestClient(application) as client:
         response = client.post(
             (f"/tenants/{context.tenant_id}/ownership/transfer"),
             json={
                 "new_owner_user_id": str(new_owner_user_id),
+            },
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
             },
         )
 
@@ -219,13 +228,15 @@ def test_owner_context_translates_command_and_commits() -> None:
     }
     assert service.call_count == 1
     assert service.received_session is cast(Session, session)
-    assert service.received_command == (
-        TransferTenantOwnershipCommand(
-            tenant_id=context.tenant_id,
-            expected_current_owner_user_id=context.user_id,
-            new_owner_user_id=new_owner_user_id,
-        )
-    )
+    assert service.received_command is not None
+    assert service.received_command.tenant_id == context.tenant_id
+    assert service.received_command.expected_current_owner_user_id == context.user_id
+    assert service.received_command.new_owner_user_id == new_owner_user_id
+    assert service.received_command.audit_context.actor.user_id == context.user_id
+    assert service.received_command.audit_context.actor.role == context.role.value
+    assert service.received_command.audit_context.source is AuditSource.HTTP
+    assert service.received_command.audit_context.request_id == request_id
+    assert service.received_command.audit_context.correlation_id == correlation_id
     assert session.commit_count == 1
 
 

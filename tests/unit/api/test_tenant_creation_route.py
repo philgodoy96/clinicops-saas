@@ -12,6 +12,8 @@ from clinicops.api.errors import (
     register_exception_handlers,
 )
 from clinicops.api.middleware.request_context import (
+    CORRELATION_ID_HEADER,
+    REQUEST_ID_HEADER,
     RequestContextMiddleware,
 )
 from clinicops.api.v1.authentication.dependencies import (
@@ -21,6 +23,7 @@ from clinicops.api.v1.tenants.dependencies import (
     get_create_tenant_service,
 )
 from clinicops.api.v1.tenants.routes import router
+from clinicops.audit.enums import AuditSource
 from clinicops.authentication.services.resolve_principal import (
     AuthenticatedPrincipal,
 )
@@ -28,7 +31,7 @@ from clinicops.tenancy.exceptions import (
     InvalidTenantNameError,
     TenantNameViolation,
 )
-from clinicops.tenancy.models import TenantStatus
+from clinicops.tenancy.models import TenantRole, TenantStatus
 from clinicops.tenancy.services.create_tenant import (
     CreatedTenant,
     CreateTenantCommand,
@@ -155,11 +158,18 @@ def test_create_tenant_uses_authenticated_user_and_commits() -> None:
         created_tenant,
     ) = build_test_app()
 
+    request_id = str(uuid4())
+    correlation_id = str(uuid4())
+
     with TestClient(application) as client:
         response = client.post(
             "/tenants",
             json={
                 "name": "  Northstar Health Clinic  ",
+            },
+            headers={
+                REQUEST_ID_HEADER: request_id,
+                CORRELATION_ID_HEADER: correlation_id,
             },
         )
 
@@ -176,10 +186,14 @@ def test_create_tenant_uses_authenticated_user_and_commits() -> None:
     }
     assert service.call_count == 1
     assert service.received_session is cast(Session, session)
-    assert service.received_command == CreateTenantCommand(
-        name="Northstar Health Clinic",
-        owner_user_id=principal.user_id,
-    )
+    assert service.received_command is not None
+    assert service.received_command.name == "Northstar Health Clinic"
+    assert service.received_command.owner_user_id == principal.user_id
+    assert service.received_command.audit_context.actor.user_id == principal.user_id
+    assert service.received_command.audit_context.actor.role == TenantRole.OWNER.value
+    assert service.received_command.audit_context.source is AuditSource.HTTP
+    assert service.received_command.audit_context.request_id == request_id
+    assert service.received_command.audit_context.correlation_id == correlation_id
     assert session.commit_count == 1
 
 
@@ -246,3 +260,28 @@ def test_create_tenant_openapi_declares_bearer_and_created_response() -> None:
     assert {"HTTPBearer": []} in operation["security"]
     assert "201" in operation["responses"]
     assert operation["summary"] == "Create a tenant"
+
+
+def test_create_tenant_audit_context_rejects_body_trace_fields() -> None:
+    (
+        application,
+        _,
+        session,
+        service,
+        _,
+    ) = build_test_app()
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/tenants",
+            json={
+                "name": "Northstar Health Clinic",
+                "request_id": str(uuid4()),
+                "correlation_id": str(uuid4()),
+                "actor_role": "admin",
+            },
+        )
+
+    assert response.status_code == 422
+    assert service.call_count == 0
+    assert session.commit_count == 0

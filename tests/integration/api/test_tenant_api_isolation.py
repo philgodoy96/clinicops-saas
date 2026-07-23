@@ -6,10 +6,11 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from clinicops.api.errors import PROBLEM_MEDIA_TYPE
+from clinicops.audit.models import AuditLogEntry
 from clinicops.authentication.models import AuthSession
 from clinicops.db.session import get_engine
 from clinicops.identity.models import (
@@ -214,6 +215,10 @@ class TenantApiDataFactory:
                 self._session.delete(authentication_session)
 
         if self._tenant_ids:
+            self._session.execute(
+                delete(AuditLogEntry).where(AuditLogEntry.tenant_id.in_(self._tenant_ids))
+            )
+
             invitations = self._session.scalars(
                 select(Invitation).where(Invitation.tenant_id.in_(self._tenant_ids))
             ).all()
