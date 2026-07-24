@@ -17,12 +17,20 @@ _ADMIN_PERMISSIONS = frozenset(
         TenantPermission.INVITATION_REVOKE,
         TenantPermission.BILLING_READ,
         TenantPermission.AUDIT_LOG_READ,
+        TenantPermission.PATIENT_READ,
+        TenantPermission.PATIENT_CREATE,
+        TenantPermission.PATIENT_UPDATE,
+        TenantPermission.PATIENT_ARCHIVE,
+        TenantPermission.PATIENT_RESTORE,
     }
 )
 
 _STAFF_PERMISSIONS = frozenset(
     {
         TenantPermission.TENANT_READ,
+        TenantPermission.PATIENT_READ,
+        TenantPermission.PATIENT_CREATE,
+        TenantPermission.PATIENT_UPDATE,
     }
 )
 
