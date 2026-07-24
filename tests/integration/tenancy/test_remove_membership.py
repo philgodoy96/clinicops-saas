@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -18,6 +19,13 @@ from clinicops.audit.enums import AuditActorType, AuditSource
 from clinicops.audit.models import AuditLogEntry
 from clinicops.db.session import get_engine
 from clinicops.identity.models import User, UserStatus
+from clinicops.professionals.contracts import (
+    UnlinkedProfessionalForMembershipRemoval,
+    UnlinkProfessionalForMembershipRemovalCommand,
+)
+from clinicops.professionals.services.unlink_professional_for_membership_removal import (
+    UnlinkProfessionalForMembershipRemovalService,
+)
 from clinicops.tenancy.exceptions import (
     MembershipActorNotAuthorizedError,
     MembershipNotFoundError,
@@ -25,6 +33,10 @@ from clinicops.tenancy.exceptions import (
     MembershipSelfManagementNotAllowedError,
     TenantDisabledError,
     TenantNotFoundError,
+)
+from clinicops.tenancy.membership_administration_repository import (
+    LockedMembershipAdministrationState,
+    MembershipAdministrationRepository,
 )
 from clinicops.tenancy.models import (
     Membership,
@@ -43,6 +55,10 @@ from clinicops.tenancy.services.remove_membership import (
 
 class SimulatedAuditRecordingError(RuntimeError):
     """Represent a deterministic audit recording failure."""
+
+
+class SimulatedProfessionalUnlinkError(RuntimeError):
+    """Represent a deterministic professional-unlink failure."""
 
 
 class RecordingAuditRecorder:
@@ -76,6 +92,42 @@ class FailingAuditRecorder:
         command: RecordAuditLogCommand,
     ) -> RecordedAuditLog:
         raise SimulatedAuditRecordingError
+
+
+class RecordingUnlinkProfessionalForMembershipRemovalService:
+    """Capture Membership-removal unlink calls without Professional persistence."""
+
+    def __init__(
+        self,
+        *,
+        events: list[str] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.sessions: list[Session] = []
+        self.tenant_ids: list[UUID] = []
+        self.membership_ids: list[UUID] = []
+        self._events = events
+        self._error = error
+
+    def execute(
+        self,
+        session: Session,
+        command: UnlinkProfessionalForMembershipRemovalCommand,
+    ) -> UnlinkedProfessionalForMembershipRemoval:
+        self.sessions.append(session)
+        self.tenant_ids.append(command.tenant_id)
+        self.membership_ids.append(command.membership_id)
+
+        if self._events is not None:
+            self._events.append("unlink")
+
+        if self._error is not None:
+            raise self._error
+
+        return UnlinkedProfessionalForMembershipRemoval(
+            professional=None,
+            previous_membership_id=None,
+        )
 
 
 def audit_context(
@@ -617,3 +669,331 @@ def test_audit_failure_prevents_membership_removal_commit(
     commit.assert_not_called()
     rollback.assert_not_called()
     assert db_session.get(Membership, membership_id) is None
+
+
+def test_successful_removal_invokes_professional_unlink_once(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    service.execute(
+        db_session,
+        RemoveMembershipCommand(
+            tenant_id=scenario.tenant.id,
+            actor_user_id=scenario.actor.id,
+            membership_id=scenario.target_membership.id,
+            audit_context=audit_context(user_id=scenario.actor.id),
+        ),
+    )
+
+    assert recording_unlink_service.sessions == [db_session]
+    assert recording_unlink_service.tenant_ids == [scenario.tenant.id]
+    assert recording_unlink_service.membership_ids == [
+        scenario.target_membership.id,
+    ]
+
+
+def test_professional_unlink_runs_after_lock_before_membership_delete(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    events: list[str] = []
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService(
+        events=events,
+    )
+    repository = MembershipAdministrationRepository()
+    original_lock = repository.get_actor_and_target_for_update
+    original_delete = repository.delete_and_flush
+
+    def lock_and_record(
+        session: Session,
+        *,
+        tenant_id: UUID,
+        actor_user_id: UUID,
+        target_membership_id: UUID,
+    ) -> LockedMembershipAdministrationState:
+        state = original_lock(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            target_membership_id=target_membership_id,
+        )
+        events.append("lock")
+        return state
+
+    def delete_and_record(
+        session: Session,
+        membership: Membership,
+    ) -> None:
+        events.append("delete")
+        original_delete(session, membership)
+
+    service = RemoveMembershipService(
+        repository=repository,
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    with (
+        patch.object(
+            repository,
+            "get_actor_and_target_for_update",
+            side_effect=lock_and_record,
+        ),
+        patch.object(
+            repository,
+            "delete_and_flush",
+            side_effect=delete_and_record,
+        ),
+    ):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=scenario.target_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
+            ),
+        )
+
+    assert events == ["lock", "unlink", "delete"]
+    assert recording_unlink_service.membership_ids == [
+        scenario.target_membership.id,
+    ]
+
+
+def test_owner_protected_removal_does_not_invoke_professional_unlink(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(
+        db_session,
+        actor_role=TenantRole.ADMIN,
+        target_is_owner=True,
+    )
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    with pytest.raises(MembershipOwnerProtectedError):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=scenario.target_membership.id,
+                audit_context=audit_context(
+                    user_id=scenario.actor.id,
+                    role=TenantRole.ADMIN.value,
+                ),
+            ),
+        )
+
+    assert recording_unlink_service.sessions == []
+    assert recording_unlink_service.membership_ids == []
+
+
+def test_self_removal_rejection_does_not_invoke_professional_unlink(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(
+        db_session,
+        actor_role=TenantRole.ADMIN,
+    )
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    with pytest.raises(MembershipSelfManagementNotAllowedError):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=scenario.actor_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
+            ),
+        )
+
+    assert recording_unlink_service.sessions == []
+    assert recording_unlink_service.membership_ids == []
+
+
+@pytest.mark.parametrize(
+    "membership_source",
+    [
+        "missing",
+        "cross_tenant",
+    ],
+)
+def test_missing_or_cross_tenant_membership_does_not_invoke_professional_unlink(
+    db_session: Session,
+    membership_source: str,
+) -> None:
+    source = create_scenario(db_session)
+    foreign = create_scenario(db_session)
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+    membership_id = uuid4() if membership_source == "missing" else foreign.target_membership.id
+
+    with pytest.raises(MembershipNotFoundError):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=source.tenant.id,
+                actor_user_id=source.actor.id,
+                membership_id=membership_id,
+                audit_context=audit_context(user_id=source.actor.id),
+            ),
+        )
+
+    assert recording_unlink_service.sessions == []
+    assert recording_unlink_service.membership_ids == []
+
+
+def test_professional_unlink_failure_prevents_membership_delete(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    membership_id = scenario.target_membership.id
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService(
+        error=SimulatedProfessionalUnlinkError("unlink unavailable"),
+    )
+    repository = MembershipAdministrationRepository()
+    service = RemoveMembershipService(
+        repository=repository,
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    with (
+        patch.object(
+            repository,
+            "delete_and_flush",
+            wraps=repository.delete_and_flush,
+        ) as delete_and_flush,
+        pytest.raises(SimulatedProfessionalUnlinkError),
+    ):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=membership_id,
+                audit_context=audit_context(user_id=scenario.actor.id),
+            ),
+        )
+
+    delete_and_flush.assert_not_called()
+    assert recording_unlink_service.sessions == [db_session]
+    assert recording_unlink_service.membership_ids == [membership_id]
+    assert db_session.get(Membership, membership_id) is not None
+
+
+def test_membership_removed_audit_unchanged_with_professional_unlink(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    target_user_id = scenario.target.id
+    target_membership_id = scenario.target_membership.id
+    removed_role = scenario.target_membership.role
+    context = audit_context(user_id=scenario.actor.id)
+    recorder = RecordingAuditRecorder()
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        audit_recorder=recorder,
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    result = service.execute(
+        db_session,
+        RemoveMembershipCommand(
+            tenant_id=scenario.tenant.id,
+            actor_user_id=scenario.actor.id,
+            membership_id=target_membership_id,
+            audit_context=context,
+        ),
+    )
+
+    assert result.membership_id == target_membership_id
+    assert recording_unlink_service.membership_ids == [target_membership_id]
+    assert recorder.sessions == [db_session]
+    assert len(recorder.commands) == 1
+
+    command = recorder.commands[0]
+
+    assert command.action == AuditAction.MEMBERSHIP_REMOVED.value
+    assert command.resource_type == AuditResourceType.MEMBERSHIP.value
+    assert command.resource_id == str(target_membership_id)
+    assert command.tenant_id == scenario.tenant.id
+    assert command.actor.actor_type is AuditActorType.USER
+    assert command.actor.user_id == scenario.actor.id
+    assert command.actor.role == TenantRole.OWNER.value
+    assert command.source is AuditSource.HTTP
+    assert command.request_id == context.request_id
+    assert command.correlation_id == context.correlation_id
+    assert command.metadata_version == 1
+    assert command.idempotency_key is None
+    assert command.metadata == {
+        "target_user_id": str(target_user_id),
+        "removed_role": removed_role.value,
+    }
+    assert "email" not in command.metadata
+    assert "name" not in command.metadata
+
+
+def test_removal_with_professional_unlink_does_not_commit_or_rollback(
+    db_session: Session,
+) -> None:
+    scenario = create_scenario(db_session)
+    recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
+    service = RemoveMembershipService(
+        professional_unlink_service=cast(
+            UnlinkProfessionalForMembershipRemovalService,
+            recording_unlink_service,
+        ),
+    )
+
+    with (
+        patch.object(db_session, "commit", wraps=db_session.commit) as commit,
+        patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback,
+    ):
+        service.execute(
+            db_session,
+            RemoveMembershipCommand(
+                tenant_id=scenario.tenant.id,
+                actor_user_id=scenario.actor.id,
+                membership_id=scenario.target_membership.id,
+                audit_context=audit_context(user_id=scenario.actor.id),
+            ),
+        )
+
+    commit.assert_not_called()
+    rollback.assert_not_called()
+    assert recording_unlink_service.sessions == [db_session]
