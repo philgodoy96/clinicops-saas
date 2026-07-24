@@ -11,8 +11,8 @@ from clinicops.patients.contracts import (
     PatientCursor,
     PatientPage,
     PatientRecord,
-    UpdatePatientCommand,
     UpdatedPatient,
+    UpdatePatientCommand,
 )
 from clinicops.patients.enums import (
     PatientListStatus,

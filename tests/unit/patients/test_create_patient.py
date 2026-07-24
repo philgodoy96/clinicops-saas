@@ -11,8 +11,8 @@ from clinicops.audit.contracts import RecordAuditLogCommand, RecordedAuditLog
 from clinicops.audit.enums import AuditSource
 from clinicops.audit.recording import AuditRecorder
 from clinicops.patients.contracts import (
-    CreatePatientCommand,
     CreatedPatient,
+    CreatePatientCommand,
 )
 from clinicops.patients.enums import PatientStatus
 from clinicops.patients.exceptions import (

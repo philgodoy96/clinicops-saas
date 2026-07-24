@@ -4,8 +4,8 @@ from clinicops.audit.actions import AuditAction, AuditResourceType
 from clinicops.audit.contracts import RecordAuditLogCommand
 from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.patients.contracts import (
-    CreatePatientCommand,
     CreatedPatient,
+    CreatePatientCommand,
     PatientRecord,
 )
 from clinicops.patients.models import Patient

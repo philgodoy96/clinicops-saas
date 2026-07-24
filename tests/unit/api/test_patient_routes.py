@@ -22,10 +22,15 @@ from clinicops.authorization.services.require_permission import (
 )
 from clinicops.patients.contracts import (
     ArchivedPatient,
+    ArchivePatientCommand,
     CreatedPatient,
+    CreatePatientCommand,
+    GetPatientCommand,
     PatientRecord,
     RestoredPatient,
+    RestorePatientCommand,
     UpdatedPatient,
+    UpdatePatientCommand,
 )
 from clinicops.patients.enums import (
     PatientListStatus,
@@ -145,11 +150,13 @@ def _patient(
 
 
 def _assert_http_audit_context(
-    command: object,
+    command: (
+        CreatePatientCommand | UpdatePatientCommand | ArchivePatientCommand | RestorePatientCommand
+    ),
     *,
     context: AuthorizedTenantContext,
 ) -> None:
-    audit_context = getattr(command, "audit_context")
+    audit_context = command.audit_context
     assert audit_context.actor.user_id == context.user_id
     assert audit_context.actor.role == context.role.value
     assert audit_context.source is AuditSource.HTTP
@@ -175,7 +182,8 @@ def test_create_route_uses_authorized_tenant_and_commits_once() -> None:
     )
 
     command = service.commands[0]
-    assert getattr(command, "tenant_id") == tenant_id
+    assert isinstance(command, CreatePatientCommand)
+    assert command.tenant_id == tenant_id
     _assert_http_audit_context(command, context=context)
     assert response.id == patient.id
     assert session.commit_count == 1
@@ -229,8 +237,9 @@ def test_get_route_uses_authorized_tenant() -> None:
     )
 
     command = service.commands[0]
-    assert getattr(command, "tenant_id") == tenant_id
-    assert getattr(command, "patient_id") == patient.id
+    assert isinstance(command, GetPatientCommand)
+    assert command.tenant_id == tenant_id
+    assert command.patient_id == patient.id
     assert response.id == patient.id
 
 
@@ -264,8 +273,9 @@ def test_update_route_tracks_explicit_null_and_commits_once() -> None:
     )
 
     command = service.commands[0]
-    assert getattr(command, "fields_to_update") == frozenset({PatientMutableField.EMAIL})
-    assert getattr(command, "email") is None
+    assert isinstance(command, UpdatePatientCommand)
+    assert command.fields_to_update == frozenset({PatientMutableField.EMAIL})
+    assert command.email is None
     _assert_http_audit_context(command, context=context)
     assert response.version == 4
     assert session.commit_count == 1
@@ -314,12 +324,16 @@ def test_archive_and_restore_routes_commit_each_transition() -> None:
         cast(RestorePatientService, restore_service),
     )
 
+    archive_command = archive_service.commands[0]
+    restore_command = restore_service.commands[0]
+    assert isinstance(archive_command, ArchivePatientCommand)
+    assert isinstance(restore_command, RestorePatientCommand)
     _assert_http_audit_context(
-        archive_service.commands[0],
+        archive_command,
         context=archive_context,
     )
     _assert_http_audit_context(
-        restore_service.commands[0],
+        restore_command,
         context=restore_context,
     )
     assert archive_response.status is PatientStatus.ARCHIVED
