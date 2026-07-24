@@ -24,6 +24,11 @@ def test_audit_actions_have_stable_values() -> None:
     assert AuditAction.BILLING_WEBHOOK_PROCESSED.value == "billing.webhook.processed"
     assert AuditAction.BILLING_WEBHOOK_IGNORED.value == "billing.webhook.ignored"
 
+    assert AuditAction.PATIENT_CREATED.value == "patient.created"
+    assert AuditAction.PATIENT_UPDATED.value == "patient.updated"
+    assert AuditAction.PATIENT_ARCHIVED.value == "patient.archived"
+    assert AuditAction.PATIENT_RESTORED.value == "patient.restored"
+
 
 def test_audit_resource_types_have_stable_values() -> None:
     assert AuditResourceType.TENANT.value == "tenant"
@@ -31,6 +36,7 @@ def test_audit_resource_types_have_stable_values() -> None:
     assert AuditResourceType.INVITATION.value == "invitation"
     assert AuditResourceType.SUBSCRIPTION.value == "subscription"
     assert AuditResourceType.BILLING_WEBHOOK_EVENT.value == "billing_webhook_event"
+    assert AuditResourceType.PATIENT.value == "patient"
 
 
 def test_action_values_are_unique() -> None:

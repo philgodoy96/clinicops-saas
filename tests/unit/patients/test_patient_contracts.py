@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.patients.contracts import (
     CreatePatientCommand,
     ListPatientsCommand,
@@ -18,6 +19,15 @@ from clinicops.patients.enums import (
     PatientMutableField,
     PatientStatus,
 )
+
+
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=uuid4(),
+        role="owner",
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 def _patient_record() -> PatientRecord:
@@ -63,6 +73,7 @@ def test_create_patient_command_preserves_optional_nulls() -> None:
     command = CreatePatientCommand(
         tenant_id=uuid4(),
         full_name="Jordan Lee",
+        audit_context=_audit_context(),
     )
 
     assert command.date_of_birth is None
@@ -89,6 +100,7 @@ def test_update_command_distinguishes_omitted_from_explicit_null() -> None:
         patient_id=patient_id,
         expected_version=3,
         fields_to_update=frozenset(),
+        audit_context=_audit_context(),
         email=None,
     )
     explicit_null = UpdatePatientCommand(
@@ -96,6 +108,7 @@ def test_update_command_distinguishes_omitted_from_explicit_null() -> None:
         patient_id=patient_id,
         expected_version=3,
         fields_to_update=frozenset({PatientMutableField.EMAIL}),
+        audit_context=_audit_context(),
         email=None,
     )
 
@@ -103,6 +116,20 @@ def test_update_command_distinguishes_omitted_from_explicit_null() -> None:
     assert PatientMutableField.EMAIL in explicit_null.fields_to_update
     assert omitted.email is None
     assert explicit_null.email is None
+
+
+def test_mutation_command_retains_immutable_audit_context() -> None:
+    context = _audit_context()
+    command = CreatePatientCommand(
+        tenant_id=uuid4(),
+        full_name="Jordan Lee",
+        audit_context=context,
+    )
+
+    assert command.audit_context is context
+
+    with pytest.raises(FrozenInstanceError):
+        command.audit_context = _audit_context()  # type: ignore[misc]
 
 
 def test_updated_patient_preserves_deterministic_changed_fields() -> None:

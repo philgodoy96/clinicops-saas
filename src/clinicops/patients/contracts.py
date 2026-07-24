@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.patients.enums import (
     PatientListStatus,
     PatientMutableField,
@@ -48,6 +49,7 @@ class CreatePatientCommand:
 
     tenant_id: UUID
     full_name: str
+    audit_context: AuditRecordingContext
     date_of_birth: date | None = None
     email: str | None = None
     phone: str | None = None
@@ -88,6 +90,7 @@ class UpdatePatientCommand:
     patient_id: UUID
     expected_version: int
     fields_to_update: frozenset[PatientMutableField]
+    audit_context: AuditRecordingContext
     full_name: str | None = None
     date_of_birth: date | None = None
     email: str | None = None
@@ -110,6 +113,7 @@ class ArchivePatientCommand:
     tenant_id: UUID
     patient_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +130,7 @@ class RestorePatientCommand:
     tenant_id: UUID
     patient_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)

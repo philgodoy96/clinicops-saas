@@ -7,9 +7,14 @@ from clinicops.api.dependencies import DatabaseSessionDependency
 from clinicops.api.v1.tenants.dependencies import (
     require_tenant_permission,
 )
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.services.require_permission import (
     AuthorizedTenantContext,
+)
+from clinicops.core.request_context import (
+    get_correlation_id,
+    get_request_id,
 )
 from clinicops.patients.contracts import (
     ArchivePatientCommand,
@@ -86,7 +91,10 @@ PatientRestoreAuthorizationDependency = Annotated[
 def get_create_patient_service(
     session: DatabaseSessionDependency,
 ) -> CreatePatientService:
-    return CreatePatientService(PatientRepository(session))
+    return CreatePatientService(
+        PatientRepository(session),
+        session,
+    )
 
 
 def get_get_patient_service(
@@ -104,19 +112,28 @@ def get_list_patients_service(
 def get_update_patient_service(
     session: DatabaseSessionDependency,
 ) -> UpdatePatientService:
-    return UpdatePatientService(PatientRepository(session))
+    return UpdatePatientService(
+        PatientRepository(session),
+        session,
+    )
 
 
 def get_archive_patient_service(
     session: DatabaseSessionDependency,
 ) -> ArchivePatientService:
-    return ArchivePatientService(PatientRepository(session))
+    return ArchivePatientService(
+        PatientRepository(session),
+        session,
+    )
 
 
 def get_restore_patient_service(
     session: DatabaseSessionDependency,
 ) -> RestorePatientService:
-    return RestorePatientService(PatientRepository(session))
+    return RestorePatientService(
+        PatientRepository(session),
+        session,
+    )
 
 
 CreatePatientServiceDependency = Annotated[
@@ -165,6 +182,7 @@ def create_patient(
             email=payload.email,
             phone=payload.phone,
             external_reference=payload.external_reference,
+            audit_context=_http_audit_context(context),
         )
     )
     session.commit()
@@ -258,6 +276,7 @@ def update_patient(
             email=payload.email,
             phone=payload.phone,
             external_reference=payload.external_reference,
+            audit_context=_http_audit_context(context),
         )
     )
     session.commit()
@@ -282,6 +301,7 @@ def archive_patient(
             tenant_id=context.tenant_id,
             patient_id=patient_id,
             expected_version=payload.expected_version,
+            audit_context=_http_audit_context(context),
         )
     )
     session.commit()
@@ -306,6 +326,7 @@ def restore_patient(
             tenant_id=context.tenant_id,
             patient_id=patient_id,
             expected_version=payload.expected_version,
+            audit_context=_http_audit_context(context),
         )
     )
     session.commit()
@@ -316,6 +337,22 @@ def _patient_response(
     patient: PatientRecord,
 ) -> PatientResponse:
     return PatientResponse.model_validate(patient)
+
+
+def _http_audit_context(
+    context: AuthorizedTenantContext,
+) -> AuditRecordingContext:
+    request_id = get_request_id()
+    correlation_id = get_correlation_id()
+    if request_id is None or correlation_id is None:
+        raise RuntimeError("Request context identifiers are required for audit recording.")
+
+    return AuditRecordingContext.http_user(
+        user_id=context.user_id,
+        role=context.role.value,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
 
 
 __all__ = [

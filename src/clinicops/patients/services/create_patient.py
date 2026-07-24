@@ -1,3 +1,8 @@
+from sqlalchemy.orm import Session
+
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.patients.contracts import (
     CreatePatientCommand,
     CreatedPatient,
@@ -22,8 +27,14 @@ class CreatePatientService:
     def __init__(
         self,
         repository: PatientRepository,
+        session: Session,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._repository = repository
+        self._session = session
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -48,6 +59,27 @@ class CreatePatientService:
 
         self._repository.add(patient)
         self._repository.flush()
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            self._session,
+            RecordAuditLogCommand(
+                tenant_id=command.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.PATIENT_CREATED.value,
+                resource_type=AuditResourceType.PATIENT.value,
+                resource_id=str(patient.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "status": patient.status.value,
+                    "version": patient.version,
+                },
+                idempotency_key=f"patient-created:{patient.id}",
+                request_id=audit_context.request_id,
+            ),
+        )
 
         return CreatedPatient(
             patient=PatientRecord(

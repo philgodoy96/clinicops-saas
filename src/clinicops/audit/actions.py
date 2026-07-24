@@ -19,6 +19,11 @@ class AuditAction(StrEnum):
     BILLING_WEBHOOK_PROCESSED = "billing.webhook.processed"
     BILLING_WEBHOOK_IGNORED = "billing.webhook.ignored"
 
+    PATIENT_CREATED = "patient.created"
+    PATIENT_UPDATED = "patient.updated"
+    PATIENT_ARCHIVED = "patient.archived"
+    PATIENT_RESTORED = "patient.restored"
+
 
 class AuditResourceType(StrEnum):
     TENANT = "tenant"
@@ -26,6 +31,7 @@ class AuditResourceType(StrEnum):
     INVITATION = "invitation"
     SUBSCRIPTION = "subscription"
     BILLING_WEBHOOK_EVENT = "billing_webhook_event"
+    PATIENT = "patient"
 
 
 __all__ = [

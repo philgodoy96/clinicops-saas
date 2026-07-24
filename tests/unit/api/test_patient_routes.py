@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from clinicops.api.v1.patients import (
     router,
     update_patient,
 )
+from clinicops.audit.enums import AuditSource
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.services.require_permission import (
     AuthorizedTenantContext,
@@ -59,6 +61,23 @@ from clinicops.patients.services.update_patient import (
     UpdatePatientService,
 )
 from clinicops.tenancy.models import TenantRole
+
+_REQUEST_ID = "request-patient-api"
+_CORRELATION_ID = "correlation-patient-api"
+
+
+@pytest.fixture(autouse=True)
+def patch_patient_route_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "clinicops.api.v1.patients.get_request_id",
+        lambda: _REQUEST_ID,
+    )
+    monkeypatch.setattr(
+        "clinicops.api.v1.patients.get_correlation_id",
+        lambda: _CORRELATION_ID,
+    )
 
 
 class RecordingSession:
@@ -125,24 +144,39 @@ def _patient(
     )
 
 
+def _assert_http_audit_context(
+    command: object,
+    *,
+    context: AuthorizedTenantContext,
+) -> None:
+    audit_context = getattr(command, "audit_context")
+    assert audit_context.actor.user_id == context.user_id
+    assert audit_context.actor.role == context.role.value
+    assert audit_context.source is AuditSource.HTTP
+    assert audit_context.request_id == _REQUEST_ID
+    assert audit_context.correlation_id == _CORRELATION_ID
+
+
 def test_create_route_uses_authorized_tenant_and_commits_once() -> None:
     tenant_id = uuid4()
     patient = _patient(tenant_id=tenant_id)
     service = RecordingService(CreatedPatient(patient=patient))
     session = RecordingSession()
+    context = _context(
+        tenant_id=tenant_id,
+        permission=TenantPermission.PATIENT_CREATE,
+    )
 
     response = create_patient(
         PatientCreateRequest(full_name="Jordan Lee"),
-        _context(
-            tenant_id=tenant_id,
-            permission=TenantPermission.PATIENT_CREATE,
-        ),
+        context,
         cast(Session, session),
         cast(CreatePatientService, service),
     )
 
     command = service.commands[0]
     assert getattr(command, "tenant_id") == tenant_id
+    _assert_http_audit_context(command, context=context)
     assert response.id == patient.id
     assert session.commit_count == 1
 
@@ -213,6 +247,10 @@ def test_update_route_tracks_explicit_null_and_commits_once() -> None:
         )
     )
     session = RecordingSession()
+    context = _context(
+        tenant_id=tenant_id,
+        permission=TenantPermission.PATIENT_UPDATE,
+    )
 
     response = update_patient(
         PatientUpdateRequest(
@@ -220,10 +258,7 @@ def test_update_route_tracks_explicit_null_and_commits_once() -> None:
             email=None,
         ),
         patient.id,
-        _context(
-            tenant_id=tenant_id,
-            permission=TenantPermission.PATIENT_UPDATE,
-        ),
+        context,
         cast(Session, session),
         cast(UpdatePatientService, service),
     )
@@ -231,6 +266,7 @@ def test_update_route_tracks_explicit_null_and_commits_once() -> None:
     command = service.commands[0]
     assert getattr(command, "fields_to_update") == frozenset({PatientMutableField.EMAIL})
     assert getattr(command, "email") is None
+    _assert_http_audit_context(command, context=context)
     assert response.version == 4
     assert session.commit_count == 1
 
@@ -254,28 +290,38 @@ def test_archive_and_restore_routes_commit_each_transition() -> None:
     restore_service = RecordingService(RestoredPatient(patient=restored))
     archive_session = RecordingSession()
     restore_session = RecordingSession()
+    archive_context = _context(
+        tenant_id=tenant_id,
+        permission=TenantPermission.PATIENT_ARCHIVE,
+    )
+    restore_context = _context(
+        tenant_id=tenant_id,
+        permission=TenantPermission.PATIENT_RESTORE,
+    )
 
     archive_response = archive_patient(
         PatientVersionRequest(expected_version=1),
         patient_id,
-        _context(
-            tenant_id=tenant_id,
-            permission=TenantPermission.PATIENT_ARCHIVE,
-        ),
+        archive_context,
         cast(Session, archive_session),
         cast(ArchivePatientService, archive_service),
     )
     restore_response = restore_patient(
         PatientVersionRequest(expected_version=2),
         patient_id,
-        _context(
-            tenant_id=tenant_id,
-            permission=TenantPermission.PATIENT_RESTORE,
-        ),
+        restore_context,
         cast(Session, restore_session),
         cast(RestorePatientService, restore_service),
     )
 
+    _assert_http_audit_context(
+        archive_service.commands[0],
+        context=archive_context,
+    )
+    _assert_http_audit_context(
+        restore_service.commands[0],
+        context=restore_context,
+    )
     assert archive_response.status is PatientStatus.ARCHIVED
     assert restore_response.status is PatientStatus.ACTIVE
     assert archive_session.commit_count == 1
