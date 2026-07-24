@@ -21,12 +21,20 @@ EXPECTED_ADMIN_PERMISSIONS = frozenset(
         TenantPermission.INVITATION_REVOKE,
         TenantPermission.BILLING_READ,
         TenantPermission.AUDIT_LOG_READ,
+        TenantPermission.PATIENT_READ,
+        TenantPermission.PATIENT_CREATE,
+        TenantPermission.PATIENT_UPDATE,
+        TenantPermission.PATIENT_ARCHIVE,
+        TenantPermission.PATIENT_RESTORE,
     }
 )
 
 EXPECTED_STAFF_PERMISSIONS = frozenset(
     {
         TenantPermission.TENANT_READ,
+        TenantPermission.PATIENT_READ,
+        TenantPermission.PATIENT_CREATE,
+        TenantPermission.PATIENT_UPDATE,
     }
 )
 
@@ -60,7 +68,12 @@ def test_permissions_for_role_returns_exact_policy(
         (TenantRole.OWNER, TenantPermission.MEMBER_MANAGE),
         (TenantRole.ADMIN, TenantPermission.MEMBER_INVITE),
         (TenantRole.ADMIN, TenantPermission.BILLING_READ),
+        (TenantRole.ADMIN, TenantPermission.PATIENT_READ),
+        (TenantRole.ADMIN, TenantPermission.PATIENT_ARCHIVE),
         (TenantRole.STAFF, TenantPermission.TENANT_READ),
+        (TenantRole.STAFF, TenantPermission.PATIENT_READ),
+        (TenantRole.STAFF, TenantPermission.PATIENT_CREATE),
+        (TenantRole.STAFF, TenantPermission.PATIENT_UPDATE),
     ],
 )
 def test_role_has_permission_returns_true_for_granted_capability(
@@ -78,6 +91,8 @@ def test_role_has_permission_returns_true_for_granted_capability(
         (TenantRole.STAFF, TenantPermission.MEMBER_INVITE),
         (TenantRole.STAFF, TenantPermission.INVITATION_CREATE),
         (TenantRole.STAFF, TenantPermission.AUDIT_LOG_READ),
+        (TenantRole.STAFF, TenantPermission.PATIENT_ARCHIVE),
+        (TenantRole.STAFF, TenantPermission.PATIENT_RESTORE),
     ],
 )
 def test_role_has_permission_returns_false_for_denied_capability(
@@ -108,5 +123,5 @@ def test_admin_cannot_manage_billing() -> None:
     )
 
 
-def test_staff_receives_only_tenant_read() -> None:
-    assert permissions_for_role(TenantRole.STAFF) == frozenset({TenantPermission.TENANT_READ})
+def test_staff_receives_only_approved_operational_permissions() -> None:
+    assert permissions_for_role(TenantRole.STAFF) == EXPECTED_STAFF_PERMISSIONS

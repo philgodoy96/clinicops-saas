@@ -80,6 +80,16 @@ from clinicops.invitations.exceptions import (
     InvitationRevokedError,
     InvitationTokenInvalidError,
 )
+from clinicops.patients.exceptions import (
+    PatientAlreadyArchivedError,
+    PatientExternalReferenceConflictError,
+    PatientInvalidCursorError,
+    PatientInvalidDateOfBirthError,
+    PatientInvalidUpdateError,
+    PatientNotArchivedError,
+    PatientNotFoundError,
+    PatientVersionConflictError,
+)
 from clinicops.tenancy.exceptions import (
     InvalidOwnershipTransferError,
     InvalidTenantNameError,
@@ -270,6 +280,21 @@ BILLING_CONFLICT_ERRORS = (
 AUDIT_LOG_FORBIDDEN_ERRORS = (AuditLogAccessDeniedError,)
 
 AUDIT_LOG_BAD_REQUEST_ERRORS = (AuditLogInvalidConfigurationError,)
+
+PATIENT_BAD_REQUEST_ERRORS = (
+    PatientInvalidCursorError,
+    PatientInvalidDateOfBirthError,
+    PatientInvalidUpdateError,
+)
+
+PATIENT_NOT_FOUND_ERRORS = (PatientNotFoundError,)
+
+PATIENT_CONFLICT_ERRORS = (
+    PatientAlreadyArchivedError,
+    PatientExternalReferenceConflictError,
+    PatientNotArchivedError,
+    PatientVersionConflictError,
+)
 
 
 def _problem_type(code: str) -> str:
@@ -519,6 +544,27 @@ def _application_problem(
         return (
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Service unavailable",
+            None,
+        )
+
+    if isinstance(exception, PATIENT_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, PATIENT_CONFLICT_ERRORS):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, PATIENT_BAD_REQUEST_ERRORS):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
             None,
         )
 

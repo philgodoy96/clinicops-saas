@@ -1,61 +1,67 @@
-class PatientError(Exception):
-    """Base class for patient-domain failures."""
+from clinicops.core.exceptions import ApplicationError
+
+
+class PatientError(ApplicationError):
+    """Base class for expected patient-domain failures."""
+
+    code = "patient_error"
+    public_message = "The patient operation could not be completed."
 
 
 class PatientNotFoundError(PatientError):
     """Raised when a patient is not visible within the authorized tenant."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient was not found in the tenant.")
+    code = "patient_not_found"
+    public_message = "The patient was not found."
 
 
 class PatientAlreadyArchivedError(PatientError):
     """Raised when an archive transition targets an archived patient."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient is already archived.")
+    code = "patient_already_archived"
+    public_message = "The patient is already archived."
 
 
 class PatientNotArchivedError(PatientError):
     """Raised when a restore transition targets an active patient."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient is not archived.")
+    code = "patient_not_archived"
+    public_message = "The patient is not archived."
 
 
 class PatientVersionConflictError(PatientError):
     """Raised when a mutation uses a stale patient version."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient version conflict.")
+    code = "patient_version_conflict"
+    public_message = "The patient version is no longer current."
 
 
 class PatientExternalReferenceConflictError(PatientError):
     """Raised when a tenant-local external reference is already in use."""
 
-    def __init__(self) -> None:
-        super().__init__("A patient with the same external reference already exists in the tenant.")
+    code = "patient_external_reference_conflict"
+    public_message = "A patient with the same external reference already exists."
 
 
 class PatientInvalidDateOfBirthError(PatientError):
     """Raised when a patient's date of birth is in the future."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient date of birth cannot be in the future.")
+    code = "patient_invalid_date_of_birth"
+    public_message = "The patient date of birth is invalid."
 
 
 class PatientInvalidUpdateError(PatientError):
     """Raised when a patient patch cannot produce a valid mutation."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient update is invalid.")
+    code = "patient_invalid_update"
+    public_message = "The patient update is invalid."
 
 
 class PatientInvalidCursorError(PatientError):
     """Raised when a patient pagination cursor is malformed."""
 
-    def __init__(self) -> None:
-        super().__init__("Patient cursor is invalid.")
+    code = "patient_invalid_cursor"
+    public_message = "The patient cursor is invalid."
 
 
 __all__ = [

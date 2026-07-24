@@ -15,3 +15,8 @@ class TenantPermission(StrEnum):
     BILLING_READ = "billing:read"
     BILLING_MANAGE = "billing:manage"
     AUDIT_LOG_READ = "audit_log:read"
+    PATIENT_READ = "patient:read"
+    PATIENT_CREATE = "patient:create"
+    PATIENT_UPDATE = "patient:update"
+    PATIENT_ARCHIVE = "patient:archive"
+    PATIENT_RESTORE = "patient:restore"
