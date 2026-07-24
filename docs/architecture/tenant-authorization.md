@@ -343,6 +343,11 @@ invitation:revoke
 billing:read
 billing:manage
 audit_log:read
+patient:read
+patient:create
+patient:update
+patient:archive
+patient:restore
 ```
 
 Permissions provide a stable language for:
@@ -398,6 +403,11 @@ invitation:revoke
 billing:read
 billing:manage
 audit_log:read
+patient:read
+patient:create
+patient:update
+patient:archive
+patient:restore
 ```
 
 ### Admin
@@ -414,6 +424,11 @@ invitation:create
 invitation:revoke
 billing:read
 audit_log:read
+patient:read
+patient:create
+patient:update
+patient:archive
+patient:restore
 ```
 
 Admin does not receive:
@@ -428,6 +443,9 @@ Staff receives:
 
 ```text
 tenant:read
+patient:read
+patient:create
+patient:update
 ```
 
 Staff cannot:
@@ -436,7 +454,8 @@ Staff cannot:
 - invite members;
 - create or revoke invitations;
 - manage billing;
-- read audit logs.
+- read audit logs;
+- archive or restore patients.
 
 ## Why the Policy Is in Code
 

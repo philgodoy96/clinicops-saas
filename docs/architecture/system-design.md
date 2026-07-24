@@ -150,17 +150,19 @@ Responsibilities:
 
 Owns:
 
-* patient records.
+* tenant-scoped patient records.
 
 Responsibilities:
 
 * tenant-scoped patient creation;
-* listing and retrieval;
-* update;
-* deactivation or deletion behavior;
-* plan-limit enforcement.
+* listing and retrieval with keyset pagination;
+* partial update with optimistic concurrency;
+* archive and restore;
+* patient audit emission.
 
 Patients are operational records and not authenticated identities.
+
+Detailed design lives in [Patients Domain](patients.md).
 
 ---
 
@@ -510,9 +512,12 @@ Conceptual permission matrix:
 | Invite admins                |   Yes |                    Yes |    No |
 | Invite staff                 |   Yes |                    Yes |    No |
 | Manage non-owner memberships |   Yes | Yes, with restrictions |    No |
-| Manage patients              |   Yes |                    Yes |   Yes |
-| Manage appointments          |   Yes |                    Yes |   Yes |
-| View tenant audit logs       |   Yes |                    Yes |    No |
+| Read, create, and update patients |   Yes |                    Yes |   Yes |
+| Archive and restore patients      |   Yes |                    Yes |    No |
+| Manage appointments               |   Yes |                    Yes |   Yes |
+| View tenant audit logs            |   Yes |                    Yes |    No |
+
+OWNER, ADMIN, and STAFF may read, create, and update patients. Only OWNER and ADMIN may archive or restore patients.
 
 The exact permission mapping will be finalized before the relevant implementation slice.
 
@@ -975,10 +980,15 @@ Request and correlation identifiers should be propagated to:
 
 Offset pagination is appropriate for relatively small operational lists:
 
-* patients;
 * appointments;
 * invitations;
 * invoices.
+
+Patients use opaque keyset pagination ordered by:
+
+```text
+created_at DESC, id DESC
+```
 
 Cursor pagination is appropriate for append-heavy chronological records:
 

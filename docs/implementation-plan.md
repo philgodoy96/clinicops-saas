@@ -54,9 +54,10 @@ Billing Reconciliation and Concurrency Protections
 Background Jobs & Worker
 Durable Audit Log Foundation
 Durable Audit Log Integrations
+Patients Domain
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, and Durable Audit Log Integrations.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, Durable Audit Log Integrations, and Patients Domain.
 
 Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
 
@@ -64,17 +65,17 @@ Background Jobs & Worker is complete. Periodic reconciliation scheduling remains
 
 Durable Audit Logs are complete, including foundation persistence, domain and worker emission, and the tenant-scoped OWNER/ADMIN read API.
 
+Patients Domain is complete, including tenant-owned patient persistence, contracts, repository isolation, create/read/list/search, partial optimistic update, archive and restore, FastAPI transport with RBAC, Problem Details, transactionally coupled audit events, authenticated integration coverage, and domain documentation.
+
 ### Remaining current-release milestones
 
 ```text
-Patients Domain
-    |
 Professionals Domain
-    |
-Final Hardening & Portfolio Release
+    ->
+Final Hardening
 ```
 
-Patients Domain is the active implementation slice.
+Professionals Domain is the active implementation slice.
 
 ---
 
@@ -219,46 +220,53 @@ authorized tenant-scoped audit read access.
 
 ---
 
-## 7. Milestone 1 — Patients Domain
+## 7. Completed — Patients Domain
 
 ### Objective
 
-Implement tenant-owned patient records as operational clinic data, not platform authentication identities.
+Implement tenant-owned patient records as operational clinic data, not platform
+authentication identities.
 
-### Primary Deliverables
+### Completed slices
 
-- patient create, read, list, update, and archive or deactivate workflows;
-- tenant isolation;
-- permissions;
-- validation;
-- indexing and uniqueness rules;
-- audit emission.
+- patient persistence and migration;
+- patient contracts and validation;
+- tenant-scoped repository;
+- create, read, list, and search;
+- partial optimistic update;
+- archive and restore;
+- FastAPI transport and RBAC;
+- Problem Details;
+- transactionally coupled audit events;
+- authenticated integration coverage for RBAC, isolation, pagination,
+  lifecycle, and conflicts;
+- domain documentation.
 
-### Engineering Risks
+### Engineering risks addressed
 
 - cross-tenant patient access;
 - patients treated as Users or Memberships;
 - sensitive patient information in logs or audit metadata;
-- ambiguous archive or deactivation behavior.
+- ambiguous archive or restore behavior;
+- lost updates without optimistic concurrency control;
+- unauthorized archive or restore by STAFF.
 
-### Test Focus
+### Completion criteria met
 
-- tenant isolation;
-- RBAC;
-- create, read, list, and update behavior;
-- archive or deactivate behavior;
-- uniqueness and validation rules;
-- audit records.
+- Patient remains separate from User/Membership;
+- tenant isolation enforced;
+- no hard delete;
+- version conflicts fail with 409;
+- STAFF cannot archive/restore;
+- audit metadata excludes patient PII.
 
-### Completion Criteria
-
-- members manage only patients belonging to their tenant;
-- patients do not authenticate into the platform;
-- patient operations are auditable.
+Patient portal access, patient authentication, global identity conflation,
+field-level encryption, bulk import or export, and frontend surfaces remain
+intentional scope decisions rather than shortcomings of this milestone.
 
 ---
 
-## 8. Milestone 2 — Professionals Domain
+## 8. Milestone 1 — Professionals Domain
 
 ### Objective
 
@@ -297,7 +305,7 @@ Implement tenant-owned professional profiles distinct from global Users and Memb
 
 ---
 
-## 9. Milestone 3 — Final Hardening & Portfolio Release
+## 9. Milestone 2 — Final Hardening & Portfolio Release
 
 ### Objective
 
@@ -454,7 +462,6 @@ Roadmap changes should preserve the project's primary goals:
 
 ## 14. Next Milestone
 
-The next implementation milestone is Patients Domain.
+The next implementation milestone is Professionals Domain.
 
-Professionals Domain and Final Hardening & Portfolio Release follow in that
-order.
+Final Hardening follows.

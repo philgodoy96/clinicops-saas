@@ -41,6 +41,13 @@ GET  /api/v1/tenants/{tenant_id}/invitations
 POST /api/v1/tenants/{tenant_id}/invitations
 POST /api/v1/tenants/{tenant_id}/invitations/{invitation_id}/revoke
 
+POST   /api/v1/tenants/{tenant_id}/patients
+GET    /api/v1/tenants/{tenant_id}/patients
+GET    /api/v1/tenants/{tenant_id}/patients/{patient_id}
+PATCH  /api/v1/tenants/{tenant_id}/patients/{patient_id}
+POST   /api/v1/tenants/{tenant_id}/patients/{patient_id}/archive
+POST   /api/v1/tenants/{tenant_id}/patients/{patient_id}/restore
+
 GET  /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription
 POST /api/v1/tenants/{tenant_id}/billing/subscription/plan-change
@@ -194,6 +201,11 @@ Current route mapping:
 | List tenant invitations | `INVITATION_READ` |
 | Issue tenant invitation | `INVITATION_CREATE` |
 | Revoke tenant invitation | `INVITATION_REVOKE` |
+| Create patient | `patient:create` |
+| List or get patient | `patient:read` |
+| Update patient | `patient:update` |
+| Archive patient | `patient:archive` |
+| Restore patient | `patient:restore` |
 | Read billing subscription | `BILLING_READ` |
 | Create billing subscription | `BILLING_MANAGE` |
 | Schedule billing plan change | `BILLING_MANAGE` |
@@ -218,9 +230,11 @@ Examples:
 Membership.tenant_id == AuthorizedTenantContext.tenant_id
 
 Invitation.tenant_id == AuthorizedTenantContext.tenant_id
+
+Patient.tenant_id == AuthorizedTenantContext.tenant_id
 ```
 
-Knowing a valid tenant or invitation UUID does not grant access.
+Knowing a valid tenant, invitation, or patient UUID does not grant access.
 
 A user who belongs to tenant A cannot read tenant B through a path containing
 tenant B's identifier.
@@ -237,6 +251,19 @@ invitation_id
 
 A cross-tenant lookup therefore returns a public not-found result instead of
 mutating another tenant's resource.
+
+Patient routes resolve the patient using both:
+
+```text
+tenant_id
+patient_id
+```
+
+After authorization and repository scoping, a cross-tenant patient ID resolves
+as not found and does not disclose the foreign record.
+
+Domain-level patient behavior is documented in
+[Patients Domain](patients.md).
 
 ## Read application boundary
 
@@ -987,7 +1014,6 @@ membership role changes
 membership activation or deactivation
 membership removal
 ownership transfer
-patients
 professionals
 audit-log queries
 ```
@@ -1003,7 +1029,11 @@ Subscription creation, scheduled plan changes, and scheduled subscription
 cancellation are the billing mutations exposed through the current tenant API.
 Billing subscription read is available to callers with `BILLING_READ`.
 
+Patient create, list, get, update, archive, and restore are exposed through the
+current tenant API under the `patient:*` permissions above. Domain-level
+patient behavior is documented in [Patients Domain](patients.md).
+
 Those remaining capabilities are addressed in subsequent milestones instead of
 being partially introduced into the current tenant read, invitation-
-administration, subscription-read, subscription-creation, plan-change, and
-cancellation boundary.
+administration, patient, subscription-read, subscription-creation, plan-change,
+and cancellation boundary.

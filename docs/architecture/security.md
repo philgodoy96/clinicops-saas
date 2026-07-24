@@ -947,7 +947,10 @@ Security properties of the implemented audit milestone:
 - no application update or delete path exists;
 - request and correlation identifiers support end-to-end traceability;
 - optional globally unique idempotency keys protect equivalent worker replay
-  without providing exactly-once guarantees.
+  without providing exactly-once guarantees;
+- patient audit metadata excludes patient PII;
+- patient data is tenant-scoped and must not be copied unnecessarily into
+  application logs.
 
 Audit persistence participates in the same local transaction as the
 corresponding domain mutation. Audit persistence failure must prevent that
@@ -1053,6 +1056,9 @@ Detailed audit architecture lives in `docs/architecture/audit-logs.md`.
 - Audit request and correlation identifiers support traceability.
 - Audit idempotency keys protect equivalent replay without exactly-once
   guarantees.
+- Patient audit metadata excludes patient PII.
+- Patient data is tenant-scoped and must not be copied unnecessarily into
+  application logs.
 
 ## Intentionally Deferred Security Controls
 
@@ -1120,7 +1126,7 @@ audit controls remain intentional follow-up work:
 - table partitioning;
 - metadata GIN index;
 - frontend audit screens;
-- Patients audit integration;
 - Professionals audit integration;
+- field-level encryption;
 - runtime database-role restrictions that deny `UPDATE` and `DELETE` on audit
   rows.
