@@ -17,6 +17,9 @@ from clinicops.api.v1.invitations.routes import (
     router as invitation_router,
 )
 from clinicops.api.v1.patients import router as patients_router
+from clinicops.api.v1.professionals import (
+    router as professionals_router,
+)
 from clinicops.api.v1.tenants.routes import router as tenant_router
 
 router = APIRouter()
@@ -32,6 +35,7 @@ router.include_router(
 router.include_router(invitation_router)
 router.include_router(tenant_router)
 router.include_router(patients_router)
+router.include_router(professionals_router)
 router.include_router(audit_logs_router)
 router.include_router(billing_router)
 router.include_router(billing_webhook_router)
