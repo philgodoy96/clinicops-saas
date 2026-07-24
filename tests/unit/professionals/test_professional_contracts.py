@@ -4,13 +4,16 @@ from uuid import uuid4
 
 import pytest
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.professionals.contracts import (
+    ArchiveProfessionalCommand,
     CreateProfessionalCommand,
     LinkProfessionalMembershipCommand,
     ListProfessionalsCommand,
     ProfessionalCursor,
     ProfessionalPage,
     ProfessionalRecord,
+    RestoreProfessionalCommand,
     UnlinkProfessionalForMembershipRemovalCommand,
     UnlinkProfessionalMembershipCommand,
     UpdatedProfessional,
@@ -21,6 +24,15 @@ from clinicops.professionals.enums import (
     ProfessionalMutableField,
     ProfessionalStatus,
 )
+
+
+def _audit_context() -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=uuid4(),
+        role="admin",
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
 
 
 def _professional_record() -> ProfessionalRecord:
@@ -56,6 +68,7 @@ def test_create_command_supports_unlinked_professional_profile() -> None:
     command = CreateProfessionalCommand(
         tenant_id=tenant_id,
         full_name="Morgan Reed",
+        audit_context=_audit_context(),
     )
 
     assert command.tenant_id == tenant_id
@@ -98,12 +111,53 @@ def test_update_command_distinguishes_explicit_null_from_omission() -> None:
         professional_id=uuid4(),
         expected_version=3,
         fields_to_update=frozenset({ProfessionalMutableField.EMAIL}),
+        audit_context=_audit_context(),
         email=None,
     )
 
     assert command.fields_to_update == frozenset({ProfessionalMutableField.EMAIL})
     assert command.email is None
     assert command.specialty is None
+
+
+def test_mutation_commands_preserve_supplied_audit_context() -> None:
+    context = _audit_context()
+    tenant_id = uuid4()
+    professional_id = uuid4()
+
+    create = CreateProfessionalCommand(
+        tenant_id=tenant_id,
+        full_name="Morgan Reed",
+        audit_context=context,
+    )
+    update = UpdateProfessionalCommand(
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        expected_version=3,
+        fields_to_update=frozenset({ProfessionalMutableField.EMAIL}),
+        audit_context=context,
+        email=None,
+    )
+    archive = ArchiveProfessionalCommand(
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        expected_version=3,
+        audit_context=context,
+    )
+    restore = RestoreProfessionalCommand(
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        expected_version=3,
+        audit_context=context,
+    )
+
+    assert create.audit_context is context
+    assert update.audit_context is context
+    assert archive.audit_context is context
+    assert restore.audit_context is context
+
+    with pytest.raises(FrozenInstanceError):
+        create.audit_context = _audit_context()  # type: ignore[misc]
 
 
 def test_updated_result_preserves_deterministic_changed_fields() -> None:

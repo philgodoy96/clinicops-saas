@@ -29,6 +29,11 @@ def test_audit_actions_have_stable_values() -> None:
     assert AuditAction.PATIENT_ARCHIVED.value == "patient.archived"
     assert AuditAction.PATIENT_RESTORED.value == "patient.restored"
 
+    assert AuditAction.PROFESSIONAL_CREATED.value == "professional.created"
+    assert AuditAction.PROFESSIONAL_UPDATED.value == "professional.updated"
+    assert AuditAction.PROFESSIONAL_ARCHIVED.value == "professional.archived"
+    assert AuditAction.PROFESSIONAL_RESTORED.value == "professional.restored"
+
 
 def test_audit_resource_types_have_stable_values() -> None:
     assert AuditResourceType.TENANT.value == "tenant"
@@ -37,6 +42,7 @@ def test_audit_resource_types_have_stable_values() -> None:
     assert AuditResourceType.SUBSCRIPTION.value == "subscription"
     assert AuditResourceType.BILLING_WEBHOOK_EVENT.value == "billing_webhook_event"
     assert AuditResourceType.PATIENT.value == "patient"
+    assert AuditResourceType.PROFESSIONAL.value == "professional"
 
 
 def test_action_values_are_unique() -> None:
