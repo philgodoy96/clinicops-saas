@@ -83,7 +83,7 @@ def _validate_limit(limit: int) -> None:
 
 
 __all__ = [
-    "ListedPatients",
     "ListPatientsQuery",
     "ListPatientsService",
+    "ListedPatients",
 ]

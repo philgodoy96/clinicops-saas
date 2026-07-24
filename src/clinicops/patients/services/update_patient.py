@@ -8,8 +8,8 @@ from clinicops.audit.contracts import RecordAuditLogCommand
 from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.patients.contracts import (
     PatientRecord,
-    UpdatePatientCommand,
     UpdatedPatient,
+    UpdatePatientCommand,
 )
 from clinicops.patients.enums import (
     PatientMutableField,

@@ -7,8 +7,8 @@ from clinicops.audit.contracts import RecordAuditLogCommand
 from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.patients.contracts import (
     PatientRecord,
-    RestorePatientCommand,
     RestoredPatient,
+    RestorePatientCommand,
 )
 from clinicops.patients.enums import PatientStatus
 from clinicops.patients.exceptions import (
