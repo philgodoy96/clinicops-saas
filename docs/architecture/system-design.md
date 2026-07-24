@@ -38,8 +38,8 @@ ClinicOps contains several workflows that require strong transactional consisten
 * creating a tenant and its owner membership;
 * accepting an invitation and creating a membership;
 * transferring ownership;
-* processing a payment event;
-* updating invoices and subscriptions;
+* ingesting a payment webhook and enqueueing durable processing;
+* applying ordered billing transitions;
 * recording audit events;
 * scheduling durable background jobs.
 
@@ -121,7 +121,6 @@ Responsibilities:
 * resolving target tenant;
 * loading the active membership;
 * evaluating tenant permissions;
-* evaluating platform-admin permissions;
 * enforcing tenant status restrictions.
 
 Authorization rules must be centralized through policies or dependencies rather than scattered across route handlers.
@@ -211,25 +210,6 @@ Detailed design lives in [Professionals Domain](professionals-domain.md).
 
 ---
 
-### Appointments
-
-Owns:
-
-* appointments.
-
-Responsibilities:
-
-* scheduling;
-* patient association;
-* professional assignment;
-* update;
-* cancellation;
-* completion;
-* lifecycle validation;
-* reminder scheduling.
-
----
-
 ### Billing
 
 Owns:
@@ -256,15 +236,16 @@ Billing state changes occur through explicit services and valid state transition
 
 Owns:
 
-* payment or webhook events.
+* billing webhook events.
 
 Responsibilities:
 
 * reading the raw request body;
 * HMAC signature validation;
 * provider event parsing;
+* immutable event persistence;
 * event deduplication;
-* billing workflow invocation;
+* enqueueing durable billing webhook processing;
 * event processing status.
 
 The Webhooks module is an integration boundary that translates external provider payloads into internal billing commands.
@@ -285,10 +266,12 @@ Responsibilities:
 * handler registration;
 * retry scheduling;
 * backoff and jitter;
-* success, failure, and dead-job states;
+* success, retry, and dead-letter states;
 * stale-lock recovery.
 
 The queue infrastructure does not own business behavior. Domain modules provide business-specific handlers.
+
+Detailed design lives in [Background Job Queue](background-jobs.md).
 
 ---
 
@@ -303,23 +286,12 @@ Responsibilities:
 * recording business-relevant actions;
 * actor identification;
 * tenant context;
-* target context;
+* resource context;
 * request and correlation identifiers;
-* append-only chronological querying.
+* append-only chronological querying;
+* OWNER/ADMIN tenant audit read access.
 
----
-
-### Platform Administration
-
-Responsibilities:
-
-* tenant inspection;
-* tenant suspension;
-* tenant reactivation;
-* platform audit access;
-* operational status inspection.
-
-Platform administration does not imply tenant membership.
+Detailed design lives in [Durable Audit Logs](audit-logs.md).
 
 ---
 
@@ -349,22 +321,19 @@ Patients
 Professionals
   Professional
 
-Appointments
-  Appointment
-
 Billing
   Plan
   Subscription
   Invoice
 
 Webhooks
-  PaymentEvent
+  BillingWebhookEvent
 
 Background Jobs
   BackgroundJob
 
 Audit
-  AuditLog
+  AuditLogEntry
 ```
 
 Other modules must not arbitrarily update models owned by another module.
@@ -385,20 +354,13 @@ The login operation identifies a global user.
 
 It does not require a tenant slug or tenant identifier.
 
-A user can later retrieve their memberships and available tenants.
-
-Conceptual endpoints include:
+After authentication, a user can list tenants backed by active memberships and operate on tenant-scoped resources:
 
 ```text
-GET /api/v1/me
-GET /api/v1/me/tenants
-```
-
-Tenant-scoped routes explicitly identify the tenant:
-
-```text
+GET /api/v1/auth/me
+GET /api/v1/tenants
 GET /api/v1/tenants/{tenant_id}/patients
-POST /api/v1/tenants/{tenant_id}/appointments
+GET /api/v1/tenants/{tenant_id}/professionals
 ```
 
 The access token identifies the user.
@@ -432,14 +394,14 @@ Authorization reads the current membership state from the database so role chang
 
 Every tenant-owned resource query must include tenant context.
 
-Correct conceptual query:
+Correct query pattern:
 
 ```text
 patient.id = requested_patient_id
 AND patient.tenant_id = requested_tenant_id
 ```
 
-Unsafe conceptual behavior:
+Unsafe behavior:
 
 ```text
 Load patient by patient_id only
@@ -454,7 +416,6 @@ This rule applies to:
 * invitations;
 * patients;
 * professionals;
-* appointments;
 * subscriptions;
 * invoices;
 * tenant audit records;
@@ -470,35 +431,24 @@ Repository scoping ensures the query cannot accidentally cross the tenant bounda
 
 ## 7. Tenant Lifecycle
 
-Recommended v1 tenant states:
+Persisted tenant states:
 
 ```text
 active
-suspended
-closed
+disabled
 ```
 
 ### Active
 
-Normal tenant operations are allowed.
+An active tenant permits authorized tenant workflows.
 
-### Suspended
+### Disabled
 
-Operational writes are blocked.
+A disabled tenant cannot authorize normal tenant operations.
 
-Recommended suspended behavior:
+Users may still authenticate globally, but tenant-scoped authorization rejects operations against a disabled tenant.
 
-* users may authenticate globally;
-* users may view their membership in the tenant;
-* normal patient and appointment mutations are rejected;
-* the owner may access approved billing recovery operations;
-* Platform Admins may reactivate the tenant.
-
-### Closed
-
-The tenant is no longer operational.
-
-Physical deletion is intentionally deferred.
+Physical tenant deletion remains intentionally deferred.
 
 Tenant deletion involves retention, audit, billing, privacy, and recovery requirements that should not be represented by a generic delete endpoint.
 
@@ -506,11 +456,11 @@ Tenant deletion involves retention, audit, billing, privacy, and recovery requir
 
 ## 8. Membership and Ownership Lifecycle
 
-Recommended membership states:
+Persisted membership states:
 
 ```text
 active
-inactive
+disabled
 ```
 
 An invitation is not a pending membership.
@@ -534,15 +484,15 @@ Critical rules:
 * one membership per user and tenant;
 * exactly one active owner membership per tenant;
 * invitations cannot assign the owner role;
-* inactive memberships cannot authorize operations;
-* the owner cannot be deactivated or removed;
+* disabled Memberships cannot authorize operations;
+* the owner cannot be disabled or removed;
 * ownership transfer is an explicit transaction.
 
 ---
 
 ## 9. Tenant Role Model
 
-Recommended v1 roles:
+Persisted v1 roles:
 
 ```text
 owner
@@ -550,27 +500,31 @@ admin
 staff
 ```
 
-Conceptual permission matrix:
+Permission matrix:
 
-| Capability                   | Owner |                  Admin | Staff |
-| ---------------------------- | ----: | ---------------------: | ----: |
-| View tenant details          |   Yes |                    Yes |   Yes |
-| Update tenant details        |   Yes |                    Yes |    No |
-| Manage billing               |   Yes |                     No |    No |
-| Transfer ownership           |   Yes |                     No |    No |
-| Invite admins                |   Yes |                    Yes |    No |
-| Invite staff                 |   Yes |                    Yes |    No |
-| Manage non-owner memberships |   Yes | Yes, with restrictions |    No |
-| Read, create, and update patients |   Yes |                    Yes |   Yes |
-| Archive and restore patients      |   Yes |                    Yes |    No |
-| Manage appointments               |   Yes |                    Yes |   Yes |
-| View tenant audit logs            |   Yes |                    Yes |    No |
+| Capability | Owner | Admin | Staff |
+| --- | ---: | ---: | ---: |
+| View tenant details | Yes | Yes | Yes |
+| Update tenant details | Yes | Yes | No |
+| Manage billing | Yes | No | No |
+| Transfer ownership | Yes | No | No |
+| Invite admins | Yes | Yes | No |
+| Invite staff | Yes | Yes | No |
+| Manage non-owner memberships | Yes | Yes, with restrictions | No |
+| Read, create, and update patients | Yes | Yes | Yes |
+| Archive and restore patients | Yes | Yes | No |
+| Read and list professionals | Yes | Yes | Yes |
+| Create, update, archive, and restore professionals | Yes | Yes | No |
+| Link and unlink professional Membership | Yes | Yes | No |
+| View tenant audit logs | Yes | Yes | No |
 
 OWNER, ADMIN, and STAFF may read, create, and update patients. Only OWNER and ADMIN may archive or restore patients.
 
-The exact permission mapping will be finalized before the relevant implementation slice.
+OWNER and ADMIN may read, create, update, archive, and restore professionals, and may link or unlink Membership. STAFF may read and list professionals only.
 
-Authorization permissions must be centrally defined and tested.
+OWNER and ADMIN may read tenant audit logs. STAFF is denied audit read.
+
+Authorization permissions are centrally defined and tested.
 
 They must not be recreated as ad hoc role comparisons throughout route handlers.
 
@@ -635,7 +589,6 @@ Transactions protect workflows that must succeed or fail as one unit.
 ```text
 Create tenant
 Create owner membership
-Create initial subscription when required
 Create audit record
 Commit
 ```
@@ -673,23 +626,36 @@ Commit
 
 The system must never expose an intermediate state with zero or two owners.
 
-### Payment Webhook Processing
+### Billing Webhook Ingestion
 
 ```text
-Validate signature before business processing
-Begin transaction
-Insert or lock payment event
-Detect duplicate event
-Validate billing transition
-Update invoice
-Update subscription when required
-Create audit records
-Create background jobs
-Mark event processed
-Commit
+receive raw request
+    -> validate HMAC before persistence
+    -> parse provider envelope
+    -> persist immutable webhook event
+    -> handle duplicate identity safely
+    -> enqueue one billing.webhook.process job in the same transaction
+    -> commit
+    -> return 202 Accepted
 ```
 
-The webhook should return success only after the durable transaction is committed.
+Invalid signatures must not create webhook events, billing transitions, audit business events, or background jobs.
+
+Duplicate provider deliveries return `202 Accepted` after confirming that the event was previously persisted and the processing job was reserved safely.
+
+### Billing Webhook Worker Processing
+
+```text
+claim eligible job
+    -> build worker audit attribution
+    -> process persisted webhook event
+    -> apply ordered billing transition or ignore stale event
+    -> record billing webhook audit fact
+    -> commit processing transaction
+    -> complete the job in the queue lifecycle
+```
+
+Job completion is a separate queue transaction from billing webhook processing.
 
 ### Domain Change and Background Job
 
@@ -713,14 +679,18 @@ Examples include:
 ```text
 CreateTenantService
 TransferTenantOwnershipService
-CreateInvitationService
 AcceptInvitationService
+CreateBillingSubscriptionService
+ScheduleBillingPlanChangeService
+IngestBillingWebhookService
+ProcessBillingWebhookEventService
+EnqueueBackgroundJobService
+ClaimBackgroundJobsService
+CompleteBackgroundJobService
 CreatePatientService
-CreateAppointmentService
-CancelAppointmentService
-ProcessPaymentWebhookService
-MarkInvoicePaidService
-SuspendTenantService
+ArchivePatientService
+CreateProfessionalService
+LinkProfessionalMembershipService
 ```
 
 Application services may:
@@ -747,7 +717,6 @@ Conceptual interface:
 ```text
 EmailProvider
   send_invitation(...)
-  send_appointment_reminder(...)
   send_payment_receipt(...)
 ```
 
@@ -782,41 +751,36 @@ The Billing module should not depend directly on fake-provider payload structure
 
 ## 14. Webhook Processing Model
 
-The webhook workflow is:
+Webhook handling is split into HTTP ingestion and worker processing.
+
+### Webhook ingestion transaction
 
 ```text
-Receive provider request
-    |
-Read exact raw body
-    |
-Validate HMAC signature
-    |
-Validate timestamp or replay window
-    |
-Parse provider envelope
-    |
-Resolve correlation identifier
-    |
-Persist provider event identifier
-    |
-Duplicate?
-  /       \
-Yes       No
- |         |
-Return     Apply valid billing transitions
-success        |
-              Create audit records
-              |
-              Enqueue related jobs
-              |
-              Mark event processed
-              |
-              Commit
+receive raw request
+    -> validate HMAC before persistence
+    -> parse provider envelope
+    -> persist immutable webhook event
+    -> handle duplicate identity safely
+    -> enqueue one billing.webhook.process job in the same transaction
+    -> commit
+    -> return 202 Accepted
 ```
 
-Duplicate provider events should return a successful response after confirming that the event was previously persisted.
+### Worker processing transaction
 
-Invalid signatures must not create payment events, billing transitions, audit business events, or background jobs.
+```text
+claim eligible job
+    -> build worker audit attribution
+    -> process persisted webhook event
+    -> apply ordered billing transition or ignore stale event
+    -> record billing webhook audit fact
+    -> commit processing transaction
+    -> complete the job in the queue lifecycle
+```
+
+Job completion is a separate queue transaction from billing webhook processing.
+
+Invalid signatures must not create webhook events, billing transitions, audit business events, or background jobs.
 
 ---
 
@@ -825,26 +789,34 @@ Invalid signatures must not create payment events, billing transitions, audit bu
 The PostgreSQL-backed queue supports:
 
 ```text
-pending
-running
+queued
+processing
+retry_scheduled
 succeeded
-failed
-dead
+dead_lettered
 ```
 
 A job includes:
 
 ```text
-job type
+job_type
 payload
-attempt count
-maximum attempts
-run_at
-locked_at
-locked_by
-last_error
+payload_version
+processing_attempt_count
+max_attempts
+priority
+available_at
+worker_id
+claim_token
+claimed_at
+lease_expires_at
+last_error_code
+last_error_message
+last_failed_at
+completed_at
+dead_lettered_at
 idempotency_key
-request_id
+origin_request_id
 correlation_id
 ```
 
@@ -854,14 +826,14 @@ Workers acquire jobs using a query based on:
 SELECT ... FOR UPDATE SKIP LOCKED
 ```
 
-Conceptual worker flow:
+Worker flow:
 
 ```text
 Select eligible jobs
     |
 Acquire row locks
     |
-Mark selected jobs running
+Mark selected jobs processing
     |
 Commit claim
     |
@@ -875,8 +847,7 @@ Mark        Retry allowed?
 succeeded    /       \
              Yes      No
               |        |
-         Schedule      Mark dead
-         retry
+     Schedule retry    Mark dead_lettered
 ```
 
 The queue provides at-least-once execution.
@@ -885,19 +856,19 @@ Locking prevents normal concurrent execution of the same job.
 
 Idempotent handlers prevent duplicate side effects when execution is repeated after failures or stale-lock recovery.
 
+Detailed design lives in [Background Job Queue](background-jobs.md).
+
 ---
 
 ## 16. Retry Strategy
 
-Retries use exponential backoff with jitter.
+Retry scheduling uses capped exponential backoff with jitter and injectable deterministic inputs in tests.
 
-A conceptual delay is:
+A conceptual delay shape is:
 
 ```text
-base_delay * 2^attempt + jitter
+capped(base_delay * 2^(attempt - 1)) with jitter in [half, full]
 ```
-
-The exact formula and caps will be finalized in the background-jobs implementation slice.
 
 Retry behavior must:
 
@@ -913,31 +884,49 @@ Retry behavior must:
 
 Audit logs are business records.
 
-Conceptual fields include:
+Persisted fields include:
 
 ```text
 id
-tenant_id when applicable
+tenant_id
 actor_type
 actor_user_id when applicable
+actor_role when applicable
+source
 action
-target_type
-target_id
+resource_type
+resource_id
+metadata_version
 metadata
-request_id
+idempotency_key when applicable
+request_id when applicable
 correlation_id
-created_at
+recorded_at
 ```
 
-Potential actor types:
+Actor types:
 
 ```text
 user
-platform_admin
-payment_provider
-background_job
 system
 ```
+
+Sources:
+
+```text
+http
+worker
+cli
+system
+```
+
+Actions and resource types use stable identifiers.
+
+Audit recording is transactionally coupled with the corresponding domain mutation.
+
+OWNER and ADMIN may read tenant audit logs through the tenant-scoped read API. STAFF is denied.
+
+`idempotency_key` is an internal replay-protection field and is not part of the public audit read response.
 
 Audit records are append-only.
 
@@ -950,6 +939,8 @@ Audit metadata must not include:
 * invitation tokens;
 * provider secrets;
 * unnecessary patient-sensitive data.
+
+Detailed design lives in [Durable Audit Logs](audit-logs.md).
 
 ---
 
@@ -966,7 +957,7 @@ authentication_failed
 webhook_signature_invalid
 webhook_duplicate_received
 job_retry_scheduled
-job_marked_dead
+job_dead_lettered
 database_error
 ```
 
@@ -1019,7 +1010,7 @@ Request and correlation identifiers should be propagated to:
 
 * structured logs;
 * audit records;
-* payment event records;
+* billing webhook event records;
 * background jobs;
 * relevant response headers.
 
@@ -1029,9 +1020,9 @@ Request and correlation identifiers should be propagated to:
 
 Offset pagination is appropriate for relatively small operational lists:
 
-* appointments;
 * invitations;
-* invoices.
+* invoices;
+* memberships.
 
 Patients and professionals use opaque keyset pagination ordered by:
 
@@ -1042,14 +1033,16 @@ created_at DESC, id DESC
 Cursor pagination is appropriate for append-heavy chronological records:
 
 * audit logs;
-* payment events;
+* billing webhook events;
 * background jobs.
 
 Cursor ordering should use a stable composite key such as:
 
 ```text
-created_at + id
+recorded_at + id
 ```
+
+or another resource-specific stable timestamp plus `id`.
 
 This prevents ambiguous ordering when multiple records have the same timestamp.
 
@@ -1071,7 +1064,7 @@ This prevents ambiguous ordering when multiple records have the same timestamp.
 * active membership required;
 * current role loaded from the database;
 * no role stored on the global user;
-* no implicit Platform Admin access to tenant data.
+* disabled tenants cannot authorize normal tenant operations.
 
 ### Provider Boundary
 
@@ -1122,22 +1115,22 @@ Extraction should follow operational evidence rather than architectural speculat
 
 ## 23. Major Failure Responses
 
-| Failure mode                      | Design response                                          |
-| --------------------------------- | -------------------------------------------------------- |
-| Cross-tenant resource access      | Membership validation and tenant-scoped query            |
-| Owner removal                     | Explicit invariant and restricted ownership workflow     |
-| Concurrent ownership transfer     | Transactional row locks                                  |
-| Duplicate invitation acceptance   | Row lock, invitation state validation, unique membership |
-| Invalid webhook signature         | Reject before business processing                        |
-| Duplicate webhook event           | Unique provider event identifier                         |
-| Delayed billing event             | Explicit state-transition validation                     |
-| Two workers claim the same job    | `FOR UPDATE SKIP LOCKED`                                 |
-| Worker crashes after claim        | Stale-lock recovery policy                               |
-| Job executes twice                | Idempotent handler and idempotency key                   |
-| Tenant suspended during operation | Central tenant-status policy                             |
-| Role changes while token is valid | Load current membership from PostgreSQL                  |
-| Critical audit write fails        | Audit write participates in the transaction              |
-| Plan limit race                   | Transactional enforcement and locking where required     |
+| Failure mode | Design response |
+| --- | --- |
+| Cross-tenant resource access | Membership validation and tenant-scoped query |
+| Owner removal | Explicit invariant and restricted ownership workflow |
+| Concurrent ownership transfer | Transactional row locks |
+| Duplicate invitation acceptance | Row lock, invitation state validation, unique membership |
+| Invalid webhook signature | Reject before persistence |
+| Duplicate webhook event | Unique provider event identifier and safe replay acknowledgement |
+| Delayed billing event | Explicit state-transition validation or ignore stale event |
+| Two workers claim the same job | `FOR UPDATE SKIP LOCKED` |
+| Worker crashes after claim | Stale-lock recovery policy |
+| Job executes twice | Idempotent handler and idempotency key |
+| Tenant disabled during operation | Central tenant-status policy |
+| Role changes while token is valid | Load current membership from PostgreSQL |
+| Critical audit write fails | Audit write participates in the transaction |
+| Plan limit race | Transactional enforcement and locking where required |
 
 ---
 
@@ -1154,10 +1147,10 @@ Extraction should follow operational evidence rather than architectural speculat
 9. Every tenant has exactly one active owner.
 10. Patients are independent tenant-owned records.
 11. Professionals are tenant-owned clinical provider profiles, separate from Memberships, with an optional same-tenant one-to-one association.
-12. Platform Admin authorization is separate from tenant RBAC.
+12. Tenant permissions are centrally defined by role.
 13. Complex workflows use application services.
 14. Critical workflows use explicit database transactions.
-15. Webhook processing is authenticated and idempotent.
+15. Webhook ingestion authenticates, persists, and enqueues processing before acknowledgement.
 16. Domain changes and required jobs may commit atomically.
 17. Background jobs use PostgreSQL locking.
 18. Background execution is at least once.

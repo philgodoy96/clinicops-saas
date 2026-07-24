@@ -44,14 +44,9 @@ authorization
 tenancy
 invitations
 billing
-patients
-```
-
-Remaining current-release domains and infrastructure areas include:
-
-```text
 jobs
 audit
+patients
 professionals
 ```
 
@@ -229,7 +224,7 @@ Ownership transfer must:
 - lock the required records;
 - promote the target member;
 - demote the current owner;
-- create an audit record once durable audit emission is available;
+- record its required audit fact in the same local transaction;
 - commit atomically.
 
 The system must never expose a committed state with zero or multiple active owners.
@@ -335,7 +330,7 @@ Invitation acceptance must:
 - validate the target email;
 - prevent token reuse;
 - prevent duplicate membership creation;
-- create an audit record once durable audit emission is available;
+- record durable audit history in the same local transaction;
 - commit atomically.
 
 New-user and existing-user acceptance flows must enforce the same core invariants.
@@ -369,13 +364,21 @@ Sensitive patient information must not be copied unnecessarily into:
 
 Professionals are tenant-owned operational profiles.
 
-A Professional is distinct from a global User.
+A Professional is tenant-owned and separate from User and Membership.
 
-A Professional is distinct from a Membership.
-
-A professional profile may optionally reference a Membership in the same tenant when the approved design associates clinic access with an operational profile. A professional may also exist without immediate platform access when the approved design permits it.
+A Professional may optionally associate with at most one Membership in the same tenant (same-tenant one-to-one). A professional may also exist without that association.
 
 A Professional is not merely a billing-plan label.
+
+Archived Professionals remain readable but are read-only until restored.
+
+There is no hard-delete API for Professionals.
+
+Professional updates that require concurrency control must use expected-version optimistic concurrency.
+
+Membership removal unlinks the associated Professional when present and preserves the Professional record.
+
+Linking or unlinking a Professional and a Membership must never change Membership authorization state.
 
 Professional records must not be linked, exposed, or synchronized across tenants.
 
@@ -393,11 +396,11 @@ Subscription state must not be changed through unrestricted generic update endpo
 
 Monetary values must use precise decimal or integer minor-unit representations, never binary floating-point values.
 
-Billing workflows must create appropriate audit records once durable audit emission is available.
+Billing workflows must create appropriate durable audit records in the same local transaction when the business change requires audit history.
 
 Billing changes and required durable jobs should commit in the same transaction when appropriate.
 
-Background Jobs will later operationalize webhook processing and reconciliation through durable asynchronous execution.
+Authenticated webhook ingestion persists the billing event and enqueues `billing.webhook.process` atomically. The worker processes the billing event asynchronously. Periodic reconciliation scheduling remains intentionally deferred.
 
 ---
 
@@ -444,20 +447,16 @@ Previously processed duplicate events may return a successful response after the
 
 ## 18. Background Job Rules
 
-Background Jobs & Worker remains a current-release milestone. The following
-rules define the approved design for that work and must not be read as evidence
-that the worker runtime already exists.
-
-Background jobs use PostgreSQL as a durable queue.
+Background jobs use PostgreSQL as a durable queue and are processed by a separate worker process.
 
 Supported states include:
 
 ```text
-pending
-running
+queued
+processing
+retry_scheduled
 succeeded
-failed
-dead
+dead_lettered
 ```
 
 Job acquisition must support multiple workers safely using:
@@ -466,17 +465,17 @@ Job acquisition must support multiple workers safely using:
 FOR UPDATE SKIP LOCKED
 ```
 
-Jobs must preserve:
+Persisted job concepts include:
 
-- job type;
-- payload;
-- attempts;
-- maximum attempts;
-- scheduled run time;
-- lock information;
-- last error;
+- payload and payload version;
+- processing attempt count and max attempts;
+- priority and availability time;
+- worker identity and claim token;
+- claimed time and lease expiration;
+- last error code/message and failure time;
+- completion/dead-letter timestamps;
 - idempotency key;
-- request ID;
+- origin request ID;
 - correlation ID.
 
 Job execution follows at-least-once semantics.
@@ -485,21 +484,30 @@ Handlers that may repeat side effects must be idempotent.
 
 Retries must use exponential backoff with jitter.
 
+Stale claims must be recoverable so abandoned work can return to the queue safely.
+
 Retryable and non-retryable failures must be distinguished.
 
-Repeatedly failing jobs must transition to a durable dead state and remain inspectable.
+Repeatedly failing jobs must transition to `dead_lettered` and remain inspectable.
 
-Sensitive information must not be placed in job payloads unless required and appropriately protected.
+Sensitive information must not be placed in job payloads.
 
 ---
 
 ## 19. Audit Log Rules
 
-Durable Audit Logs remains a current-release milestone. The following rules
-define the approved design for that work and must not be read as evidence that
-durable audit persistence already exists.
-
 Application logs do not replace audit records.
+
+Durable Audit Logs currently provide:
+
+- tenant-scoped append-only persistence;
+- user and system attribution;
+- request and correlation identifiers;
+- transactionally coupled domain recording;
+- idempotent worker replay where stable keys exist;
+- OWNER/ADMIN tenant-scoped read access;
+- no STAFF read access;
+- no public exposure of internal idempotency keys.
 
 Audit logs record business-relevant actions.
 
@@ -508,12 +516,15 @@ Examples include:
 ```text
 tenant.created
 tenant.ownership_transferred
-user.invited
+membership.role_changed
+membership.removed
+invitation.created
 invitation.accepted
+billing.subscription.created
+billing.webhook.processed
 patient.created
 professional.created
-subscription.created
-webhook.processed
+professional.membership_unlinked
 ```
 
 Audit records are append-only.
@@ -539,7 +550,7 @@ Audit records must not contain:
 - provider secrets;
 - unnecessary sensitive patient data.
 
-Critical audit writes should participate in the related business transaction.
+Critical audit writes must participate in the related business transaction.
 
 ---
 

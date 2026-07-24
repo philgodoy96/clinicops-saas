@@ -72,7 +72,7 @@ Responsibilities include:
 * inviting and managing tenant members;
 * assigning supported tenant roles;
 * managing patients and professionals;
-* viewing tenant audit history once durable audit access is available;
+* viewing tenant audit history;
 * transferring tenant ownership.
 
 Each tenant must have exactly one active owner.
@@ -99,7 +99,7 @@ Responsibilities may include:
 * managing non-owner memberships;
 * managing patients;
 * managing professionals;
-* viewing tenant operational audit history once durable audit access is available.
+* viewing authorized tenant audit history.
 
 A Tenant Admin cannot:
 
@@ -282,69 +282,27 @@ A different post-transfer role may be introduced later if product requirements j
 
 ClinicOps is divided into the following business and platform capabilities.
 
-### Implemented foundation
+### Implemented portfolio scope
 
-* global user identity and password credentials;
-* login and persisted authentication sessions;
-* refresh-token rotation and session revocation;
-* tenants, memberships, and membership-based RBAC;
+* identity and password credentials;
+* authentication sessions and refresh-token rotation;
+* tenants, Memberships, RBAC, and ownership transfer;
 * invitation onboarding and membership administration;
-* ownership transfer;
-* billing customer and subscription persistence;
-* local price catalog and fake payment provider;
-* idempotent provider operations;
-* subscription creation and read APIs;
-* scheduled plan changes and scheduled cancellation;
-* webhook authentication, durable ingestion, and processing;
-* provider state ordering;
-* billing reconciliation and concurrency protections;
-* request IDs and correlation IDs;
-* structured application logs;
-* patient management: tenant-scoped create, read, list, partial update, archive, restore, optimistic concurrency, RBAC, and transactionally coupled audit events.
-
-### Remaining current-release capabilities
-
-* Background Jobs & Worker;
-* Durable Audit Logs;
+* subscription billing and fake provider;
+* webhook authentication, durable ingestion, deduplication, and worker processing;
+* reconciliation and concurrency protections;
+* PostgreSQL-backed durable jobs and worker runtime;
+* Durable Audit Logs and OWNER/ADMIN audit read API;
+* Patients Domain;
 * Professionals Domain;
-* Final Hardening & Portfolio Release.
+* request/correlation tracing;
+* Docker Compose and CI.
 
-### Background Jobs
+### Release Status
 
-Remaining work includes:
+ClinicOps is feature-complete for the approved portfolio scope.
 
-* durable job storage;
-* transactional enqueueing;
-* safe worker locking;
-* retries;
-* exponential backoff;
-* jitter;
-* dead-letter behavior;
-* idempotent execution;
-* worker runtime and operational integration.
-
-### Audit
-
-Remaining work includes:
-
-* append-only business-relevant event records;
-* actor, tenant, resource, and identifier context;
-* transactional audit emission;
-* secret-redaction policy;
-* authorized tenant-scoped read access.
-
-Regular application logs are not a durable audit trail.
-
-### Professionals
-
-Remaining work includes:
-
-* tenant-scoped professional profiles;
-* create, read, list, update, and deactivate workflows;
-* optional membership association;
-* tenant isolation and permissions;
-* uniqueness rules;
-* audit emission.
+Future changes are intentional extensions beyond that scope, not missing current-release milestones.
 
 ---
 
@@ -432,7 +390,7 @@ ClinicOps must explicitly address the following failures:
 
 * a user attempts to access another tenant's data;
 * a user has a valid token but no membership in the requested tenant;
-* a membership is inactive;
+* a membership is disabled;
 * an owner attempts to remove themselves;
 * an admin attempts to remove the owner;
 * two ownership transfers execute concurrently;
@@ -446,7 +404,7 @@ ClinicOps must explicitly address the following failures:
 * two workers attempt to claim the same background job;
 * a worker crashes after claiming a job;
 * a job repeatedly fails;
-* a tenant becomes suspended during an operational workflow;
+* a tenant becomes disabled during an operational workflow;
 * audit creation fails during a critical transaction;
 * concurrent writes race against tenant-owned operational limits where such limits exist.
 
@@ -456,16 +414,23 @@ These failures must influence service boundaries, transaction design, locking st
 
 ## 9. Current Release Scope
 
-The current release includes the implemented SaaS foundation plus the remaining macro-milestones:
+The approved portfolio release is complete. It includes:
 
-* Background Jobs & Worker;
-* Durable Audit Logs;
+* identity and password credentials;
+* authentication sessions and refresh-token rotation;
+* tenants, Memberships, RBAC, and ownership transfer;
+* invitation onboarding and membership administration;
+* subscription billing and fake provider;
+* webhook authentication, durable ingestion, deduplication, and worker processing;
+* reconciliation and concurrency protections;
+* PostgreSQL-backed durable jobs and worker runtime;
+* Durable Audit Logs and OWNER/ADMIN audit read API;
+* Patients Domain;
 * Professionals Domain;
-* Final Hardening & Portfolio Release.
+* request/correlation tracing;
+* Docker Compose and CI.
 
-The implemented foundation already covers identity, authentication sessions, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, the approved billing and webhook boundary, and tenant-scoped patient management.
-
-Billing is complete for its approved synchronous and local-provider scope. Background Jobs will later operationalize webhook processing and reconciliation through durable asynchronous execution.
+Billing covers its approved synchronous and local-provider scope. The asynchronous webhook boundary is implemented as follows: authenticated HTTP ingestion persists the event and enqueues one semantic job in the same transaction; the worker processes the event and billing transition asynchronously. Periodic reconciliation scheduling remains deferred.
 
 ---
 
@@ -501,7 +466,13 @@ The following capabilities are intentionally deferred beyond the current release
 * microservices;
 * schema-per-tenant or tenant-per-database isolation;
 * Kubernetes and infrastructure-as-code platforms;
-* full observability platforms.
+* full observability platforms;
+* scheduling and availability;
+* external credential verification;
+* provider portal;
+* payroll and compensation;
+* global Professional identity;
+* bulk Professional workflows.
 
 These are strategic scope decisions.
 

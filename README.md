@@ -1,5 +1,7 @@
 ﻿# ClinicOps SaaS
 
+[![CI](https://github.com/philgodoy96/clinicops-saas/actions/workflows/ci.yml/badge.svg)](https://github.com/philgodoy96/clinicops-saas/actions/workflows/ci.yml)
+
 ClinicOps SaaS is a production-minded multi-tenant clinic management backend for small clinics and private practices.
 
 The system is designed around secure tenant isolation, role-based access control, invitation-based onboarding, clinic operations, subscription billing, payment webhooks, durable background jobs, and business auditability.
@@ -10,10 +12,10 @@ The initial product is API-first and implemented as a modular monolith using Fas
 
 ## Project Status
 
-Current phase:
+Status:
 
 ```text
-Active development
+Feature-complete for the approved portfolio scope
 ```
 
 ClinicOps currently has an implemented backend foundation covering:
@@ -46,7 +48,9 @@ Patients Domain is complete for the approved tenant-scoped clinical-record bound
 
 Professionals Domain is complete for the approved tenant-scoped provider-profile boundary: tenant-owned provider profiles, active/archived lifecycle, optimistic concurrency, optional one-to-one Membership association, tenant-safe search and keyset pagination, transactional audit, and preservation of Professionals during Membership removal. Frontend, scheduling, credential verification, and provider portal work remain intentionally deferred.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work.
+The approved portfolio scope is complete. Future work consists of intentional extensions and maintenance. No additional domain is required for the current release.
+
+The product context, system design, directory structure principles, and engineering standards are documented.
 
 ---
 
@@ -68,41 +72,30 @@ ClinicOps centralizes these concerns in a single backend platform with explicit 
 
 ---
 
-## Core Capabilities
+## Implemented Capabilities
 
-ClinicOps is designed to support:
+ClinicOps implements:
 
-- global user identities;
-- tenant memberships;
-- owner, admin, and staff roles;
-- invitation-based onboarding;
+- global identities and first-party authentication;
+- persisted authentication sessions and refresh-token rotation;
+- tenants and Membership-based RBAC;
+- invitation onboarding;
+- membership administration and ownership transfer;
 - patient management;
 - professional provider profiles;
-- appointment scheduling and lifecycle management;
-- subscription plans;
-- tenant subscriptions;
-- invoice lifecycles;
-- signed payment webhooks;
-- idempotent payment event processing;
-- PostgreSQL-backed background jobs;
-- retries with exponential backoff and jitter;
-- durable tenant-scoped append-only audit persistence;
-- domain and worker audit emission with idempotent replay;
-- tenant-scoped OWNER/ADMIN audit history reads;
-- structured application logs;
-- request IDs;
-- correlation IDs;
-- API-only platform administration.
+- subscription lifecycle;
+- fake payment-provider boundary;
+- signed webhook ingestion;
+- durable webhook storage, deduplication, and asynchronous processing;
+- PostgreSQL-backed jobs and worker runtime;
+- retries, stale-claim recovery, and dead-letter behavior;
+- durable audit logs and authorized tenant audit reads;
+- request IDs, correlation IDs, and structured logging;
+- Docker Compose and GitHub Actions.
 
 ---
 
 ## Core Actors
-
-### Platform Admin
-
-Operates the SaaS platform, inspects tenant status, and performs approved platform-level actions.
-
-Platform administration is separate from tenant membership and does not grant implicit access to clinic operational data.
 
 ### Tenant Owner
 
@@ -116,7 +109,7 @@ Manages operational clinic data and non-owner memberships within the configured 
 
 ### Staff
 
-Performs patient and appointment operations according to tenant permissions.
+Performs patient and Professional operations according to tenant permissions.
 
 ### Fake Payment Provider
 
@@ -133,6 +126,10 @@ Patients are not authenticated platform users in v1.
 A tenant-owned clinical provider profile.
 
 Professionals are operational clinic records, intentionally separate from Memberships, and are not authenticated platform users in v1.
+
+### Future extension: Platform Admin
+
+Platform administration is intentionally deferred. When introduced, a Platform Admin would operate the SaaS platform, inspect tenant status, and perform approved platform-level actions, separate from tenant membership and without implicit access to clinic operational data.
 
 ---
 
@@ -221,20 +218,19 @@ The API and worker are separate processes built from the same codebase and the s
 
 ---
 
-## Planned Modules
+## Implemented Modules
 
 ```text
 identity
-tenants
+authentication
+authorization
+tenancy
 invitations
-patients
-professionals
-appointments
 billing
-webhooks
 jobs
 audit
-platform_admin
+patients
+professionals
 ```
 
 Each module owns its models, persistence behavior, application workflows, and business rules.
@@ -405,90 +401,43 @@ Detailed design lives in [Professionals Domain](docs/architecture/professionals-
 - [Professionals API](docs/api/professionals.md)
 - [Security](docs/architecture/security.md)
 
-Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
+Additional ADRs may be introduced when future changes create decisions with durable architectural consequences.
 
 ---
 
-## Planned Delivery Milestones
+## Completed Delivery Scope
 
-### Application Foundation
+The approved portfolio release covers:
 
-- Python project configuration;
-- FastAPI bootstrap;
-- PostgreSQL development environment;
-- Alembic;
-- testing foundation;
-- continuous integration.
-
-### Identity and Tenant Access
-
-- users;
-- password hashing;
-- authentication;
-- refresh tokens;
-- tenants;
-- memberships;
-- RBAC;
-- ownership transfer.
-
-### Invitation Onboarding
-
-- secure invitation tokens;
-- new-user acceptance;
-- existing-user acceptance;
-- fake email delivery.
-
-### Clinic Operations
-
-- patient management (complete for the approved tenant-scoped clinical-record boundary);
-- professional provider profiles (complete for the approved tenant-scoped provider-profile boundary);
-- appointment lifecycle;
-- reminder jobs;
-- tenant and entitlement enforcement.
-
-### Billing and Payment Events
-
-- plans;
-- subscriptions;
-- invoices;
-- fake payment provider;
-- HMAC validation;
-- idempotent payment processing;
-- tenant suspension and recovery.
-
-### Operational Capabilities
-
-- PostgreSQL-backed durable jobs and worker runtime;
-- billing webhook asynchronous processing;
-- retry and dead-job behavior;
-- Durable Audit Logs;
-- Professionals Domain (complete);
-- Final Hardening and portfolio release.
+- application foundation: Python project configuration, FastAPI bootstrap, PostgreSQL development environment, Alembic, testing foundation, and continuous integration;
+- global identity, first-party authentication, persisted sessions, and refresh-token rotation;
+- tenants, Membership-based RBAC, invitation onboarding, membership administration, and ownership transfer;
+- tenant-scoped patient management with optimistic concurrency, archive and restore, and lifecycle audit;
+- tenant-owned professional provider profiles with active/archived lifecycle, optional Membership association, search and keyset pagination, and transactional audit;
+- subscription lifecycle, fake payment-provider boundary, signed webhook ingestion, durable webhook storage and deduplication, and asynchronous webhook processing;
+- PostgreSQL-backed jobs and worker runtime with retries, stale-claim recovery, and dead-letter behavior;
+- durable audit logs with authorized tenant-scoped reads;
+- request IDs, correlation IDs, structured logging, Docker Compose, and GitHub Actions.
 
 ---
 
 ## Intentionally Deferred
 
-The following capabilities are intentionally deferred from v1:
+The following capabilities are intentionally deferred from the current release:
 
-- frontend dashboard;
-- patient portal;
-- provider portal;
-- patient authentication;
-- OAuth providers;
+- appointments, availability, reminders, and calendar integration;
+- invoice and payment-record models beyond the implemented subscription boundary;
+- entitlements, refunds, credits, and proration;
+- platform administration;
 - real email delivery;
-- real payment processing as the primary implementation;
-- regional payment integrations;
-- cross-tenant patient identity;
-- tenant-configurable custom roles;
-- external credential verification;
-- microservices;
-- external message brokers;
-- Kubernetes;
-- infrastructure as code;
-- full observability platform.
+- real payment-provider adapters;
+- frontend, patient portal, and provider portal;
+- OAuth providers;
+- cross-tenant patient or Professional identity;
+- custom tenant roles;
+- infrastructure expansion such as external brokers, microservices, Kubernetes, and infrastructure as code.
 
-V1 prioritizes backend correctness, tenant isolation, authorization, billing reliability, webhook security, durable background processing, and auditability.
+The current release prioritizes backend correctness, tenant isolation, authorization, billing reliability, webhook security, durable background processing, and auditability.
 
 ---
 

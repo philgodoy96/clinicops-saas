@@ -41,6 +41,10 @@ The milestone includes:
 - bounded and deterministic JSON metadata normalization;
 - explicit metadata versioning;
 - domain audit emission for tenancy, invitations, and billing;
+- Patient domain audit emission;
+- Professional lifecycle audit emission;
+- Professional-Membership link and unlink audit emission;
+- unlink audit during Membership removal;
 - worker-originated billing webhook audit emission;
 - idempotent recording;
 - semantic replay conflict detection;
@@ -329,6 +333,13 @@ patient.created
 patient.updated
 patient.archived
 patient.restored
+
+professional.created
+professional.updated
+professional.archived
+professional.restored
+professional.membership_linked
+professional.membership_unlinked
 ```
 
 New audited domain operations can be introduced without requiring an enum migration for every action.
@@ -344,6 +355,7 @@ invitation
 subscription
 billing_webhook_event
 patient
+professional
 ```
 
 Each entry stores:
@@ -515,6 +527,22 @@ This avoids collision with SQLAlchemy declarative metadata.
 
 ```json
 { "previous_status": "archived", "new_status": "active", "version": 4 }
+```
+
+```json
+{ "version": 2, "changed_fields": ["specialty", "email"] }
+```
+
+```json
+{ "membership_id": "uuid", "version": 5 }
+```
+
+```json
+{ "membership_id": "uuid", "reason": "explicit", "version": 6 }
+```
+
+```json
+{ "membership_id": "uuid", "reason": "membership_removal", "version": 7 }
 ```
 
 Subscription status values use the persisted enum spelling `canceled`. The audit action name remains `billing.subscription.cancelled`.
@@ -707,6 +735,48 @@ Patient audit metadata excludes:
 - `date_of_birth`;
 - `external_reference` values.
 
+### Professionals
+
+See [Professionals Domain](professionals-domain.md).
+
+Implemented emissions:
+
+- `professional.created`;
+- `professional.updated`;
+- `professional.archived`;
+- `professional.restored`;
+- `professional.membership_linked`;
+- `professional.membership_unlinked`.
+
+Authenticated Professional API mutations use HTTP user attribution.
+
+Membership-removal unlink reuses the Membership removal HTTP audit context.
+
+Professional audit recording uses the same SQLAlchemy Session as the Professional mutation. The service records the audit entry before the HTTP route commits. Audit persistence failure prevents the corresponding local transaction from committing.
+
+Read and list operations do not emit audit events.
+
+Professional audit metadata may include:
+
+- status;
+- previous and new status;
+- resulting version;
+- changed-field names;
+- Membership UUID for association changes;
+- unlink reason `explicit` or `membership_removal`.
+
+Professional audit metadata excludes:
+
+- full name;
+- specialty values;
+- registration number;
+- registration region;
+- email;
+- phone;
+- external reference;
+- Membership user identity;
+- Membership role and status.
+
 ## Idempotency and Replay
 
 `idempotency_key` is optional and internal.
@@ -729,6 +799,12 @@ patient-created:{patient_id}
 patient-updated:{patient_id}:{version}
 patient-archived:{patient_id}:{version}
 patient-restored:{patient_id}:{version}
+professional-created:{professional_id}
+professional-updated:{professional_id}:{version}
+professional-archived:{professional_id}:{version}
+professional-restored:{professional_id}:{version}
+professional-membership-linked:{professional_id}:{version}
+professional-membership-unlinked:{professional_id}:{version}
 ```
 
 Role changes, membership removal, and ownership transfer intentionally omit synthetic audit keys because those domain operations have no durable operation identifier suitable for semantic replay reuse.
@@ -1240,7 +1316,6 @@ Intentionally deferred beyond the current release:
 - security-attempt event persistence;
 - table partitioning;
 - metadata GIN index;
-- frontend audit screens;
-- Professionals audit integration.
+- frontend audit screens.
 
 These remain deliberate engineering boundaries rather than incomplete foundation work.
