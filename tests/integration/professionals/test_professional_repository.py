@@ -21,7 +21,7 @@ from clinicops.professionals.models import Professional
 from clinicops.professionals.repositories.professional_repository import (
     ProfessionalRepository,
 )
-from clinicops.tenancy.models import Membership, Tenant, TenantRole
+from clinicops.tenancy.models import Membership, MembershipStatus, Tenant, TenantRole
 
 
 @pytest.fixture
@@ -52,12 +52,14 @@ def _create_membership(
     session: Session,
     *,
     tenant: Tenant,
+    status: MembershipStatus = MembershipStatus.ACTIVE,
 ) -> Membership:
     user = User(email=f"repository-{uuid4().hex}@example.com")
     membership = Membership(
         tenant=tenant,
         user=user,
         role=TenantRole.STAFF,
+        status=status,
     )
     session.add(membership)
     session.flush()
@@ -510,3 +512,110 @@ def test_repository_unlinks_by_membership_for_membership_removal(
     assert unlinked.membership_id is None
     assert unlinked.version == 2
     assert repeated_unlink is None
+
+
+def test_repository_returns_active_membership_status_for_same_tenant(
+    db_session: Session,
+) -> None:
+    tenant = _create_tenant(db_session, name="Active Membership Clinic")
+    membership = _create_membership(db_session, tenant=tenant)
+    repository = ProfessionalRepository(db_session)
+
+    status = repository.get_membership_status_for_tenant_for_update(
+        tenant_id=tenant.id,
+        membership_id=membership.id,
+    )
+
+    assert status is MembershipStatus.ACTIVE
+
+
+def test_repository_returns_disabled_membership_status_for_same_tenant(
+    db_session: Session,
+) -> None:
+    tenant = _create_tenant(db_session, name="Disabled Membership Clinic")
+    membership = _create_membership(
+        db_session,
+        tenant=tenant,
+        status=MembershipStatus.DISABLED,
+    )
+    repository = ProfessionalRepository(db_session)
+
+    status = repository.get_membership_status_for_tenant_for_update(
+        tenant_id=tenant.id,
+        membership_id=membership.id,
+    )
+
+    assert status is MembershipStatus.DISABLED
+
+
+def test_repository_returns_none_for_membership_from_another_tenant(
+    db_session: Session,
+) -> None:
+    tenant = _create_tenant(db_session, name="Lookup Tenant Clinic")
+    foreign_tenant = _create_tenant(db_session, name="Foreign Membership Clinic")
+    foreign_membership = _create_membership(
+        db_session,
+        tenant=foreign_tenant,
+    )
+    repository = ProfessionalRepository(db_session)
+
+    status = repository.get_membership_status_for_tenant_for_update(
+        tenant_id=tenant.id,
+        membership_id=foreign_membership.id,
+    )
+
+    assert status is None
+
+
+def test_repository_returns_none_for_missing_membership(
+    db_session: Session,
+) -> None:
+    tenant = _create_tenant(db_session, name="Missing Membership Clinic")
+    repository = ProfessionalRepository(db_session)
+
+    status = repository.get_membership_status_for_tenant_for_update(
+        tenant_id=tenant.id,
+        membership_id=uuid4(),
+    )
+
+    assert status is None
+
+
+def test_repository_membership_status_lookup_does_not_modify_membership(
+    db_session: Session,
+) -> None:
+    tenant = _create_tenant(db_session, name="Immutable Lookup Clinic")
+    membership = _create_membership(
+        db_session,
+        tenant=tenant,
+        status=MembershipStatus.DISABLED,
+    )
+    repository = ProfessionalRepository(db_session)
+    before = (
+        membership.id,
+        membership.tenant_id,
+        membership.user_id,
+        membership.role,
+        membership.status,
+        membership.created_at,
+        membership.updated_at,
+        membership.disabled_at,
+    )
+
+    status = repository.get_membership_status_for_tenant_for_update(
+        tenant_id=tenant.id,
+        membership_id=membership.id,
+    )
+    db_session.refresh(membership)
+
+    assert status is MembershipStatus.DISABLED
+    assert (
+        membership.id,
+        membership.tenant_id,
+        membership.user_id,
+        membership.role,
+        membership.status,
+        membership.created_at,
+        membership.updated_at,
+        membership.disabled_at,
+    ) == before
