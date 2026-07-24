@@ -5,7 +5,10 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from clinicops.audit.context import AuditRecordingContext
+from clinicops.audit.models import AuditLogEntry
 from clinicops.db.session import get_engine
+from clinicops.identity.models import User
 from clinicops.patients.contracts import UpdatePatientCommand
 from clinicops.patients.enums import PatientMutableField
 from clinicops.patients.exceptions import (
@@ -22,46 +25,67 @@ from clinicops.patients.services.update_patient import (
 from clinicops.tenancy.models import Tenant
 
 
+def _audit_context(*, user_id: UUID) -> AuditRecordingContext:
+    return AuditRecordingContext.http_user(
+        user_id=user_id,
+        role="owner",
+        request_id=str(uuid4()),
+        correlation_id=str(uuid4()),
+    )
+
+
 @pytest.fixture
-def persisted_patient() -> Iterator[tuple[UUID, UUID]]:
+def persisted_patient() -> Iterator[tuple[UUID, UUID, UUID]]:
     setup_session = Session(get_engine())
     tenant = Tenant(name=f"Patient Concurrency Clinic {uuid4().hex}")
+    actor = User(email=f"patient-concurrency-actor-{uuid4().hex}@example.com")
     patient = Patient(
         tenant=tenant,
         full_name="Jordan Lee",
         email="initial@example.com",
     )
-    setup_session.add(patient)
+    setup_session.add_all([tenant, actor, patient])
     setup_session.commit()
 
     tenant_id = tenant.id
     patient_id = patient.id
+    actor_user_id = actor.id
     setup_session.close()
 
     try:
-        yield tenant_id, patient_id
+        yield tenant_id, patient_id, actor_user_id
     finally:
         cleanup_session = Session(get_engine())
         try:
+            cleanup_session.execute(
+                delete(AuditLogEntry).where(AuditLogEntry.tenant_id == tenant_id)
+            )
             cleanup_session.execute(delete(Patient).where(Patient.id == patient_id))
             cleanup_session.execute(delete(Tenant).where(Tenant.id == tenant_id))
+            cleanup_session.execute(delete(User).where(User.id == actor_user_id))
             cleanup_session.commit()
         finally:
             cleanup_session.close()
 
 
 def test_stale_writer_cannot_overwrite_committed_update(
-    persisted_patient: tuple[UUID, UUID],
+    persisted_patient: tuple[UUID, UUID, UUID],
 ) -> None:
-    tenant_id, patient_id = persisted_patient
+    tenant_id, patient_id, actor_user_id = persisted_patient
     first_session = Session(get_engine())
     second_session = Session(get_engine())
 
     try:
         first_repository = PatientRepository(first_session)
         second_repository = PatientRepository(second_session)
-        first_service = UpdatePatientService(first_repository)
-        second_service = UpdatePatientService(second_repository)
+        first_service = UpdatePatientService(
+            first_repository,
+            first_session,
+        )
+        second_service = UpdatePatientService(
+            second_repository,
+            second_session,
+        )
 
         first_observation = first_repository.get_by_id_for_tenant(
             tenant_id=tenant_id,
@@ -84,6 +108,7 @@ def test_stale_writer_cannot_overwrite_committed_update(
                 expected_version=first_observation.version,
                 fields_to_update=frozenset({PatientMutableField.EMAIL}),
                 email="first-writer@example.com",
+                audit_context=_audit_context(user_id=actor_user_id),
             )
         )
         first_session.commit()
@@ -99,6 +124,7 @@ def test_stale_writer_cannot_overwrite_committed_update(
                     expected_version=second_observation.version,
                     fields_to_update=frozenset({PatientMutableField.EMAIL}),
                     email="second-writer@example.com",
+                    audit_context=_audit_context(user_id=actor_user_id),
                 )
             )
 
@@ -124,9 +150,9 @@ def test_stale_writer_cannot_overwrite_committed_update(
 
 
 def test_cross_tenant_update_is_reported_as_not_found(
-    persisted_patient: tuple[UUID, UUID],
+    persisted_patient: tuple[UUID, UUID, UUID],
 ) -> None:
-    tenant_id, patient_id = persisted_patient
+    tenant_id, patient_id, actor_user_id = persisted_patient
     session = Session(get_engine())
     foreign_tenant = Tenant(name=f"Foreign Patient Clinic {uuid4().hex}")
     session.add(foreign_tenant)
@@ -134,7 +160,10 @@ def test_cross_tenant_update_is_reported_as_not_found(
     foreign_tenant_id = foreign_tenant.id
 
     try:
-        service = UpdatePatientService(PatientRepository(session))
+        service = UpdatePatientService(
+            PatientRepository(session),
+            session,
+        )
 
         with pytest.raises(PatientNotFoundError):
             service.execute(
@@ -144,6 +173,7 @@ def test_cross_tenant_update_is_reported_as_not_found(
                     expected_version=1,
                     fields_to_update=frozenset({PatientMutableField.EMAIL}),
                     email="foreign@example.com",
+                    audit_context=_audit_context(user_id=actor_user_id),
                 )
             )
     finally:

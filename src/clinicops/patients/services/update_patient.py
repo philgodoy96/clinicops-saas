@@ -1,6 +1,11 @@
 from datetime import date
 from typing import NoReturn
 
+from sqlalchemy.orm import Session
+
+from clinicops.audit.actions import AuditAction, AuditResourceType
+from clinicops.audit.contracts import RecordAuditLogCommand
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.patients.contracts import (
     PatientRecord,
     UpdatePatientCommand,
@@ -42,8 +47,14 @@ class UpdatePatientService:
     def __init__(
         self,
         repository: PatientRepository,
+        session: Session,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._repository = repository
+        self._session = session
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -109,6 +120,27 @@ class UpdatePatientService:
                 repository=self._repository,
                 command=command,
             )
+
+        audit_context = command.audit_context
+        self._audit_recorder.record(
+            self._session,
+            RecordAuditLogCommand(
+                tenant_id=command.tenant_id,
+                actor=audit_context.actor,
+                source=audit_context.source,
+                action=AuditAction.PATIENT_UPDATED.value,
+                resource_type=AuditResourceType.PATIENT.value,
+                resource_id=str(updated.id),
+                correlation_id=audit_context.correlation_id,
+                metadata_version=1,
+                metadata={
+                    "version": updated.version,
+                    "changed_fields": [field.value for field in changed_fields],
+                },
+                idempotency_key=(f"patient-updated:{updated.id}:{updated.version}"),
+                request_id=audit_context.request_id,
+            ),
+        )
 
         return UpdatedPatient(
             patient=updated,
