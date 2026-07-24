@@ -150,11 +150,26 @@ def test_mutation_commands_preserve_supplied_audit_context() -> None:
         expected_version=3,
         audit_context=context,
     )
+    link = LinkProfessionalMembershipCommand(
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        membership_id=uuid4(),
+        expected_version=3,
+        audit_context=context,
+    )
+    unlink = UnlinkProfessionalMembershipCommand(
+        tenant_id=tenant_id,
+        professional_id=professional_id,
+        expected_version=3,
+        audit_context=context,
+    )
 
     assert create.audit_context is context
     assert update.audit_context is context
     assert archive.audit_context is context
     assert restore.audit_context is context
+    assert link.audit_context is context
+    assert unlink.audit_context is context
 
     with pytest.raises(FrozenInstanceError):
         create.audit_context = _audit_context()  # type: ignore[misc]
@@ -181,28 +196,35 @@ def test_link_command_carries_tenant_professional_membership_and_version() -> No
     tenant_id = uuid4()
     professional_id = uuid4()
     membership_id = uuid4()
+    context = _audit_context()
 
     command = LinkProfessionalMembershipCommand(
         tenant_id=tenant_id,
         professional_id=professional_id,
         membership_id=membership_id,
         expected_version=2,
+        audit_context=context,
     )
 
     assert command.tenant_id == tenant_id
     assert command.professional_id == professional_id
     assert command.membership_id == membership_id
     assert command.expected_version == 2
+    assert command.audit_context is context
 
 
 def test_explicit_unlink_command_does_not_accept_membership_identifier() -> None:
+    context = _audit_context()
+
     command = UnlinkProfessionalMembershipCommand(
         tenant_id=uuid4(),
         professional_id=uuid4(),
         expected_version=4,
+        audit_context=context,
     )
 
     assert not hasattr(command, "membership_id")
+    assert command.audit_context is context
 
 
 def test_membership_removal_unlink_command_is_tenant_scoped() -> None:

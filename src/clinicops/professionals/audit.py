@@ -1,3 +1,6 @@
+from typing import Literal
+from uuid import UUID
+
 from clinicops.audit.actions import AuditAction, AuditResourceType
 from clinicops.audit.context import AuditRecordingContext
 from clinicops.audit.contracts import JSONObject, RecordAuditLogCommand
@@ -6,6 +9,11 @@ from clinicops.professionals.enums import (
     ProfessionalMutableField,
     ProfessionalStatus,
 )
+
+type ProfessionalMembershipUnlinkReason = Literal[
+    "explicit",
+    "membership_removal",
+]
 
 
 def professional_created_audit_command(
@@ -87,6 +95,52 @@ def professional_restored_audit_command(
     )
 
 
+def professional_membership_linked_audit_command(
+    *,
+    professional: ProfessionalRecord,
+    membership_id: UUID,
+    audit_context: AuditRecordingContext,
+) -> RecordAuditLogCommand:
+    """Build the safe audit fact for Professional-Membership linking."""
+
+    return _command(
+        professional=professional,
+        audit_context=audit_context,
+        action=AuditAction.PROFESSIONAL_MEMBERSHIP_LINKED,
+        metadata={
+            "membership_id": str(membership_id),
+            "version": professional.version,
+        },
+        idempotency_key=(
+            f"professional-membership-linked:{professional.id}:{professional.version}"
+        ),
+    )
+
+
+def professional_membership_unlinked_audit_command(
+    *,
+    professional: ProfessionalRecord,
+    membership_id: UUID,
+    reason: ProfessionalMembershipUnlinkReason,
+    audit_context: AuditRecordingContext,
+) -> RecordAuditLogCommand:
+    """Build the safe audit fact for Professional-Membership unlinking."""
+
+    return _command(
+        professional=professional,
+        audit_context=audit_context,
+        action=AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED,
+        metadata={
+            "membership_id": str(membership_id),
+            "reason": reason,
+            "version": professional.version,
+        },
+        idempotency_key=(
+            f"professional-membership-unlinked:{professional.id}:{professional.version}"
+        ),
+    )
+
+
 def _command(
     *,
     professional: ProfessionalRecord,
@@ -111,8 +165,11 @@ def _command(
 
 
 __all__ = [
+    "ProfessionalMembershipUnlinkReason",
     "professional_archived_audit_command",
     "professional_created_audit_command",
+    "professional_membership_linked_audit_command",
+    "professional_membership_unlinked_audit_command",
     "professional_restored_audit_command",
     "professional_updated_audit_command",
 ]

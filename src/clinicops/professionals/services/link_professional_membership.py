@@ -1,5 +1,9 @@
 from typing import NoReturn
 
+from sqlalchemy.orm import Session
+
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
+from clinicops.professionals.audit import professional_membership_linked_audit_command
 from clinicops.professionals.contracts import (
     LinkedProfessionalMembership,
     LinkProfessionalMembershipCommand,
@@ -26,8 +30,14 @@ class LinkProfessionalMembershipService:
     def __init__(
         self,
         repository: ProfessionalRepository,
+        session: Session,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._repository = repository
+        self._session = session
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -69,6 +79,15 @@ class LinkProfessionalMembershipService:
                 repository=self._repository,
                 command=command,
             )
+
+        self._audit_recorder.record(
+            self._session,
+            professional_membership_linked_audit_command(
+                professional=linked,
+                membership_id=command.membership_id,
+                audit_context=command.audit_context,
+            ),
+        )
 
         return LinkedProfessionalMembership(professional=linked)
 

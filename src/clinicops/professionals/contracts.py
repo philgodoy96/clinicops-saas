@@ -155,6 +155,7 @@ class LinkProfessionalMembershipCommand:
     professional_id: UUID
     membership_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +172,7 @@ class UnlinkProfessionalMembershipCommand:
     tenant_id: UUID
     professional_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)

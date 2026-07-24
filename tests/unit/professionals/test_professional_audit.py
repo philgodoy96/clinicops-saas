@@ -11,6 +11,8 @@ from clinicops.audit.enums import AuditSource
 from clinicops.professionals.audit import (
     professional_archived_audit_command,
     professional_created_audit_command,
+    professional_membership_linked_audit_command,
+    professional_membership_unlinked_audit_command,
     professional_restored_audit_command,
     professional_updated_audit_command,
 )
@@ -180,3 +182,88 @@ def test_professional_archive_and_restore_audit_shapes() -> None:
         "version": 3,
     }
     assert restore_command.idempotency_key == (f"professional-restored:{restored.id}:3")
+
+
+_PII_VALUES = {
+    "Morgan Reed",
+    "Dentistry",
+    "DDS-48291",
+    "CA",
+    "morgan@example.com",
+    "+1-202-555-0130",
+    "PROVIDER-100",
+}
+_FORBIDDEN_MEMBERSHIP_KEYS = {"role", "status", "user_id"}
+
+
+def _assert_safe_membership_audit_surface(
+    command: RecordAuditLogCommand,
+    *,
+    professional: ProfessionalRecord,
+    context: AuditRecordingContext,
+) -> None:
+    assert command.tenant_id == professional.tenant_id
+    assert command.resource_type == AuditResourceType.PROFESSIONAL.value
+    assert command.resource_id == str(professional.id)
+    assert command.actor == context.actor
+    assert command.source is AuditSource.HTTP
+    assert command.request_id == context.request_id
+    assert command.correlation_id == context.correlation_id
+    assert command.metadata_version == 1
+    assert _FORBIDDEN_METADATA_KEYS.isdisjoint(command.metadata)
+    assert _FORBIDDEN_MEMBERSHIP_KEYS.isdisjoint(command.metadata)
+    assert _PII_VALUES.isdisjoint({str(value) for value in command.metadata.values()})
+
+
+def test_professional_membership_linked_audit_shape() -> None:
+    professional = _professional(version=2)
+    membership_id = uuid4()
+    context = _audit_context()
+
+    command = professional_membership_linked_audit_command(
+        professional=professional,
+        membership_id=membership_id,
+        audit_context=context,
+    )
+
+    _assert_safe_membership_audit_surface(
+        command,
+        professional=professional,
+        context=context,
+    )
+    assert command.action == AuditAction.PROFESSIONAL_MEMBERSHIP_LINKED.value
+    assert command.metadata == {
+        "membership_id": str(membership_id),
+        "version": professional.version,
+    }
+    assert command.idempotency_key == (
+        f"professional-membership-linked:{professional.id}:{professional.version}"
+    )
+
+
+def test_professional_membership_unlinked_audit_shape() -> None:
+    professional = _professional(version=3)
+    membership_id = uuid4()
+    context = _audit_context()
+
+    command = professional_membership_unlinked_audit_command(
+        professional=professional,
+        membership_id=membership_id,
+        reason="explicit",
+        audit_context=context,
+    )
+
+    _assert_safe_membership_audit_surface(
+        command,
+        professional=professional,
+        context=context,
+    )
+    assert command.action == AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED.value
+    assert command.metadata == {
+        "membership_id": str(membership_id),
+        "reason": "explicit",
+        "version": professional.version,
+    }
+    assert command.idempotency_key == (
+        f"professional-membership-unlinked:{professional.id}:{professional.version}"
+    )
