@@ -13,7 +13,9 @@ from clinicops.identity.models import User
 from clinicops.professionals.contracts import (
     ArchiveProfessionalCommand,
     CreateProfessionalCommand,
+    LinkProfessionalMembershipCommand,
     RestoreProfessionalCommand,
+    UnlinkProfessionalMembershipCommand,
     UpdateProfessionalCommand,
 )
 from clinicops.professionals.enums import ProfessionalMutableField
@@ -26,13 +28,19 @@ from clinicops.professionals.services.archive_professional import (
 from clinicops.professionals.services.create_professional import (
     CreateProfessionalService,
 )
+from clinicops.professionals.services.link_professional_membership import (
+    LinkProfessionalMembershipService,
+)
 from clinicops.professionals.services.restore_professional import (
     RestoreProfessionalService,
+)
+from clinicops.professionals.services.unlink_professional_membership import (
+    UnlinkProfessionalMembershipService,
 )
 from clinicops.professionals.services.update_professional import (
     UpdateProfessionalService,
 )
-from clinicops.tenancy.models import Tenant, TenantRole
+from clinicops.tenancy.models import Membership, Tenant, TenantRole
 
 
 @pytest.fixture
@@ -62,7 +70,13 @@ def test_professional_lifecycle_records_safe_audit_facts_in_one_transaction(
 ) -> None:
     tenant = Tenant(name=f"Professional Audit {uuid4().hex[:8]}")
     actor = User(email=f"professional-audit-{uuid4().hex}@example.com")
-    db_session.add_all([tenant, actor])
+    member = User(email=f"professional-member-{uuid4().hex}@example.com")
+    membership = Membership(
+        tenant=tenant,
+        user=member,
+        role=TenantRole.STAFF,
+    )
+    db_session.add_all([tenant, actor, membership])
     db_session.flush()
 
     repository = ProfessionalRepository(db_session)
@@ -145,6 +159,41 @@ def test_professional_lifecycle_records_safe_audit_facts_in_one_transaction(
         .professional
     )
 
+    linked = (
+        LinkProfessionalMembershipService(
+            repository,
+            db_session,
+        )
+        .execute(
+            LinkProfessionalMembershipCommand(
+                tenant_id=tenant.id,
+                professional_id=created.id,
+                membership_id=membership.id,
+                expected_version=restored.version,
+                audit_context=audit_context,
+            )
+        )
+        .professional
+    )
+
+    unlinked = (
+        UnlinkProfessionalMembershipService(
+            repository,
+            db_session,
+        )
+        .execute(
+            UnlinkProfessionalMembershipCommand(
+                tenant_id=tenant.id,
+                professional_id=created.id,
+                expected_version=linked.version,
+                audit_context=audit_context,
+            )
+        )
+        .professional
+    )
+
+    assert db_session.in_transaction() is True
+
     entries = tuple(
         db_session.execute(
             select(AuditLogEntry).where(
@@ -161,6 +210,8 @@ def test_professional_lifecycle_records_safe_audit_facts_in_one_transaction(
         AuditAction.PROFESSIONAL_UPDATED.value,
         AuditAction.PROFESSIONAL_ARCHIVED.value,
         AuditAction.PROFESSIONAL_RESTORED.value,
+        AuditAction.PROFESSIONAL_MEMBERSHIP_LINKED.value,
+        AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED.value,
     }
     assert entries_by_action[AuditAction.PROFESSIONAL_CREATED.value].event_metadata == {
         "status": "active",
@@ -180,6 +231,21 @@ def test_professional_lifecycle_records_safe_audit_facts_in_one_transaction(
         "new_status": "active",
         "version": 4,
     }
+    linked_entry = entries_by_action[AuditAction.PROFESSIONAL_MEMBERSHIP_LINKED.value]
+    unlinked_entry = entries_by_action[AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED.value]
+    assert linked_entry.event_metadata == {
+        "membership_id": str(membership.id),
+        "version": 5,
+    }
+    assert unlinked_entry.event_metadata == {
+        "membership_id": str(membership.id),
+        "reason": "explicit",
+        "version": 6,
+    }
+    assert linked_entry.resource_type == AuditResourceType.PROFESSIONAL.value
+    assert linked_entry.resource_id == str(created.id)
+    assert unlinked_entry.resource_type == AuditResourceType.PROFESSIONAL.value
+    assert unlinked_entry.resource_id == str(created.id)
 
     forbidden_values = {
         "Morgan Reed",
@@ -198,11 +264,14 @@ def test_professional_lifecycle_records_safe_audit_facts_in_one_transaction(
     assert all(
         entry.actor_user_id == audit_context.actor.user_id
         and entry.actor_role == audit_context.actor.role
+        and entry.source == audit_context.source.value
         and entry.request_id == audit_context.request_id
         and entry.correlation_id == audit_context.correlation_id
         for entry in entries
     )
     assert restored.version == 4
+    assert linked.version == 5
+    assert unlinked.version == 6
 
 
 def _metadata_strings(value: object) -> set[str]:

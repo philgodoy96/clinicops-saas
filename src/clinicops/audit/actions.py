@@ -28,6 +28,8 @@ class AuditAction(StrEnum):
     PROFESSIONAL_UPDATED = "professional.updated"
     PROFESSIONAL_ARCHIVED = "professional.archived"
     PROFESSIONAL_RESTORED = "professional.restored"
+    PROFESSIONAL_MEMBERSHIP_LINKED = "professional.membership_linked"
+    PROFESSIONAL_MEMBERSHIP_UNLINKED = "professional.membership_unlinked"
 
 
 class AuditResourceType(StrEnum):

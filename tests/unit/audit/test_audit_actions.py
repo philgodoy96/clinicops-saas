@@ -33,6 +33,8 @@ def test_audit_actions_have_stable_values() -> None:
     assert AuditAction.PROFESSIONAL_UPDATED.value == "professional.updated"
     assert AuditAction.PROFESSIONAL_ARCHIVED.value == "professional.archived"
     assert AuditAction.PROFESSIONAL_RESTORED.value == "professional.restored"
+    assert AuditAction.PROFESSIONAL_MEMBERSHIP_LINKED.value == "professional.membership_linked"
+    assert AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED.value == "professional.membership_unlinked"
 
 
 def test_audit_resource_types_have_stable_values() -> None:
