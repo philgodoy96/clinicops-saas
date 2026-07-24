@@ -1,3 +1,7 @@
+from sqlalchemy.orm import Session
+
+from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
+from clinicops.professionals.audit import professional_created_audit_command
 from clinicops.professionals.contracts import (
     CreatedProfessional,
     CreateProfessionalCommand,
@@ -24,8 +28,14 @@ class CreateProfessionalService:
     def __init__(
         self,
         repository: ProfessionalRepository,
+        session: Session,
+        audit_recorder: AuditRecorder | None = None,
     ) -> None:
         self._repository = repository
+        self._session = session
+        self._audit_recorder = (
+            audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
 
     def execute(
         self,
@@ -55,24 +65,32 @@ class CreateProfessionalService:
         self._repository.add(professional)
         self._repository.flush()
 
-        return CreatedProfessional(
-            professional=ProfessionalRecord(
-                id=professional.id,
-                tenant_id=professional.tenant_id,
-                membership_id=professional.membership_id,
-                full_name=professional.full_name,
-                specialty=professional.specialty,
-                registration_number=professional.registration_number,
-                registration_region=professional.registration_region,
-                email=professional.email,
-                phone=professional.phone,
-                external_reference=professional.external_reference,
-                status=professional.status,
-                version=professional.version,
-                created_at=professional.created_at,
-                updated_at=professional.updated_at,
-            )
+        professional_record = ProfessionalRecord(
+            id=professional.id,
+            tenant_id=professional.tenant_id,
+            membership_id=professional.membership_id,
+            full_name=professional.full_name,
+            specialty=professional.specialty,
+            registration_number=professional.registration_number,
+            registration_region=professional.registration_region,
+            email=professional.email,
+            phone=professional.phone,
+            external_reference=professional.external_reference,
+            status=professional.status,
+            version=professional.version,
+            created_at=professional.created_at,
+            updated_at=professional.updated_at,
         )
+
+        self._audit_recorder.record(
+            self._session,
+            professional_created_audit_command(
+                professional=professional_record,
+                audit_context=command.audit_context,
+            ),
+        )
+
+        return CreatedProfessional(professional=professional_record)
 
 
 __all__ = ["CreateProfessionalService"]

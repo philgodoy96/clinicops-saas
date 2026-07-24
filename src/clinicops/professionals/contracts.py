@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from clinicops.audit.context import AuditRecordingContext
 from clinicops.professionals.enums import (
     ProfessionalListStatus,
     ProfessionalMutableField,
@@ -51,6 +52,7 @@ class CreateProfessionalCommand:
 
     tenant_id: UUID
     full_name: str
+    audit_context: AuditRecordingContext
     specialty: str | None = None
     registration_number: str | None = None
     registration_region: str | None = None
@@ -93,6 +95,7 @@ class UpdateProfessionalCommand:
     professional_id: UUID
     expected_version: int
     fields_to_update: frozenset[ProfessionalMutableField]
+    audit_context: AuditRecordingContext
     full_name: str | None = None
     specialty: str | None = None
     registration_number: str | None = None
@@ -117,6 +120,7 @@ class ArchiveProfessionalCommand:
     tenant_id: UUID
     professional_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +137,7 @@ class RestoreProfessionalCommand:
     tenant_id: UUID
     professional_id: UUID
     expected_version: int
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)

@@ -24,6 +24,11 @@ class AuditAction(StrEnum):
     PATIENT_ARCHIVED = "patient.archived"
     PATIENT_RESTORED = "patient.restored"
 
+    PROFESSIONAL_CREATED = "professional.created"
+    PROFESSIONAL_UPDATED = "professional.updated"
+    PROFESSIONAL_ARCHIVED = "professional.archived"
+    PROFESSIONAL_RESTORED = "professional.restored"
+
 
 class AuditResourceType(StrEnum):
     TENANT = "tenant"
@@ -32,6 +37,7 @@ class AuditResourceType(StrEnum):
     SUBSCRIPTION = "subscription"
     BILLING_WEBHOOK_EVENT = "billing_webhook_event"
     PATIENT = "patient"
+    PROFESSIONAL = "professional"
 
 
 __all__ = [
