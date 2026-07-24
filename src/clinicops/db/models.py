@@ -18,6 +18,7 @@ from clinicops.identity.models import PasswordCredential, User, UserStatus
 from clinicops.invitations.models import Invitation, InvitationStatus
 from clinicops.jobs.models import BackgroundJob
 from clinicops.patients.models import Patient
+from clinicops.professionals.models import Professional
 from clinicops.tenancy.models import (
     Membership,
     MembershipStatus,
@@ -41,6 +42,7 @@ __all__ = [
     "MembershipStatus",
     "PasswordCredential",
     "Patient",
+    "Professional",
     "ProviderOperation",
     "RefreshToken",
     "RefreshTokenStatus",

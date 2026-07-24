@@ -118,6 +118,11 @@ class Membership(Base):
             "tenant_id",
             name="uq_memberships_user_id_tenant_id",
         ),
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_memberships_tenant_id_id",
+        ),
         Index(
             "ix_memberships_tenant_id",
             "tenant_id",
