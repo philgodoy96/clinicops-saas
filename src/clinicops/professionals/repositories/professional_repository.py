@@ -22,6 +22,7 @@ from clinicops.professionals.exceptions import (
     ProfessionalMembershipLinkConflictError,
 )
 from clinicops.professionals.models import Professional
+from clinicops.tenancy.models import Membership, MembershipStatus
 
 _EXTERNAL_REFERENCE_CONSTRAINT = "uq_professionals_tenant_external_reference"
 _MEMBERSHIP_LINK_CONSTRAINT = "uq_professionals_membership_id"
@@ -76,6 +77,24 @@ class ProfessionalRepository:
         )
         professional = self._session.execute(statement).scalar_one_or_none()
         return _to_record(professional) if professional is not None else None
+
+    def get_membership_status_for_tenant_for_update(
+        self,
+        *,
+        tenant_id: UUID,
+        membership_id: UUID,
+    ) -> MembershipStatus | None:
+        """Return and lock one tenant membership status for linking."""
+
+        statement = (
+            select(Membership.status)
+            .where(
+                Membership.tenant_id == tenant_id,
+                Membership.id == membership_id,
+            )
+            .with_for_update()
+        )
+        return self._session.execute(statement).scalar_one_or_none()
 
     def list_for_tenant(
         self,
