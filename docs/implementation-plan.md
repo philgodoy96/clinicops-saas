@@ -55,9 +55,10 @@ Background Jobs & Worker
 Durable Audit Log Foundation
 Durable Audit Log Integrations
 Patients Domain
+Professionals Domain
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, Durable Audit Log Integrations, and Patients Domain.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, Durable Audit Log Integrations, Patients Domain, and Professionals Domain.
 
 Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
 
@@ -67,15 +68,15 @@ Durable Audit Logs are complete, including foundation persistence, domain and wo
 
 Patients Domain is complete, including tenant-owned patient persistence, contracts, repository isolation, create/read/list/search, partial optimistic update, archive and restore, FastAPI transport with RBAC, Problem Details, transactionally coupled audit events, authenticated integration coverage, and domain documentation.
 
+Professionals Domain is complete, including tenant-owned professional persistence and migration, domain contracts and normalization, repository isolation, create/read/list/update, archive and restore, explicit Membership link and unlink, Membership-removal integration, audit actions, FastAPI transport with RBAC, Problem Details mappings, authenticated integration coverage for isolation, concurrency, and transactional integrity, and public documentation.
+
 ### Remaining current-release milestones
 
 ```text
-Professionals Domain
-    ->
 Final Hardening
 ```
 
-Professionals Domain is the active implementation slice.
+Final Hardening is the active implementation slice.
 
 ---
 
@@ -266,46 +267,49 @@ intentional scope decisions rather than shortcomings of this milestone.
 
 ---
 
-## 8. Milestone 1 — Professionals Domain
+## 8. Completed — Professionals Domain
 
 ### Objective
 
 Implement tenant-owned professional profiles distinct from global Users and Memberships.
 
-### Primary Deliverables
+### Completed slices
 
-- professional create, read, list, update, and deactivate workflows;
-- tenant isolation;
-- optional membership association;
-- permissions;
-- uniqueness rules;
-- audit emission.
+- persistence and migration;
+- domain contracts and normalization;
+- tenant-scoped repository;
+- create, read, list, update, archive, and restore workflows;
+- explicit Membership link and unlink;
+- Membership-removal integration;
+- audit actions;
+- RBAC permissions;
+- API schemas and routes;
+- Problem Details mappings;
+- integration, isolation, concurrency, and transactional tests;
+- public documentation.
 
-### Engineering Risks
+### Engineering risks addressed
 
 - professionals treated as equivalent to Memberships;
 - cross-tenant professional access;
 - invalid membership associations across tenants;
 - uniqueness conflicts within a tenant.
 
-### Test Focus
-
-- tenant isolation;
-- RBAC;
-- optional membership association rules;
-- uniqueness behavior;
-- deactivate behavior;
-- audit records.
-
-### Completion Criteria
+### Completion criteria met
 
 - professionals remain tenant-owned operational profiles;
-- optional membership association preserves tenant boundaries;
+- Membership link and unlink preserve tenant boundaries;
+- Membership removal unlinks linked professionals safely;
 - professional operations are auditable.
+
+Scheduling and availability, credential authority integrations, payroll,
+provider portal, global provider identity, bulk workflows, and frontend
+surfaces remain intentional scope decisions rather than shortcomings of this
+milestone.
 
 ---
 
-## 9. Milestone 2 — Final Hardening & Portfolio Release
+## 9. Milestone 1 — Final Hardening & Portfolio Release
 
 ### Objective
 
@@ -462,6 +466,4 @@ Roadmap changes should preserve the project's primary goals:
 
 ## 14. Next Milestone
 
-The next implementation milestone is Professionals Domain.
-
-Final Hardening follows.
+The next implementation milestone is Final Hardening & Portfolio Release.

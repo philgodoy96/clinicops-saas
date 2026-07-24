@@ -33,13 +33,20 @@ ClinicOps currently has an implemented backend foundation covering:
 - tenant-scoped OWNER/ADMIN audit read API;
 - tenant-scoped patient records with create, read, list, update, archive, and restore;
 - patient optimistic concurrency and tenant-isolated persistence;
-- patient lifecycle audit emission.
+- patient lifecycle audit emission;
+- tenant-owned professional provider profiles with active/archived lifecycle;
+- professional optimistic concurrency and optional one-to-one Membership association;
+- tenant-safe professional search and keyset pagination;
+- transactional professional audit emission;
+- professional preservation during Membership removal.
 
 Durable Audit Logs are complete, including transactionally coupled recording, idempotent worker replay, and authorized tenant-scoped read access.
 
 Patients Domain is complete for the approved tenant-scoped clinical-record boundary: staff-managed patient records, keyset listing and search, optimistic updates, archive and restore, and transactionally coupled audit events. Patients are not platform users and do not authenticate.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work. The next implementation milestone is Professionals Domain.
+Professionals Domain is complete for the approved tenant-scoped provider-profile boundary: tenant-owned provider profiles, active/archived lifecycle, optimistic concurrency, optional one-to-one Membership association, tenant-safe search and keyset pagination, transactional audit, and preservation of Professionals during Membership removal. Frontend, scheduling, credential verification, and provider portal work remain intentionally deferred.
+
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work.
 
 ---
 
@@ -70,6 +77,7 @@ ClinicOps is designed to support:
 - owner, admin, and staff roles;
 - invitation-based onboarding;
 - patient management;
+- professional provider profiles;
 - appointment scheduling and lifecycle management;
 - subscription plans;
 - tenant subscriptions;
@@ -119,6 +127,12 @@ Simulates an external payment provider and sends signed webhook events for local
 A tenant-owned operational record.
 
 Patients are not authenticated platform users in v1.
+
+### Professional
+
+A tenant-owned clinical provider profile.
+
+Professionals are operational clinic records, intentionally separate from Memberships, and are not authenticated platform users in v1.
 
 ---
 
@@ -214,6 +228,7 @@ identity
 tenants
 invitations
 patients
+professionals
 appointments
 billing
 webhooks
@@ -348,6 +363,22 @@ Detailed design lives in [Patients Domain](docs/architecture/patients.md).
 
 ---
 
+## Professionals Domain
+
+ClinicOps treats a Professional as a tenant-owned clinical provider profile managed by tenant members.
+
+OWNER and ADMIN may create, update, archive, restore, and link or unlink Memberships. OWNER, ADMIN, and STAFF may read and list. No hard-delete endpoint exists. Archived professionals remain readable and are read-only until restored.
+
+Professionals support an active/archived lifecycle, optimistic concurrency through an explicit `expected_version`, optional one-to-one Membership association, tenant-safe search and keyset pagination, and transactionally coupled audit events. Removing a Membership unlinks any associated Professional without deleting the provider profile.
+
+Frontend workflows, appointment scheduling, credential verification, and provider portal work remain intentionally deferred.
+
+Unit and integration coverage includes persistence constraints, tenant isolation, lifecycle and concurrency, Membership linking and removal, audit atomicity, search and keyset listing, authorization, and authenticated API workflows.
+
+Detailed design lives in [Professionals Domain](docs/architecture/professionals-domain.md). API contracts live in [Professionals API](docs/api/professionals.md).
+
+---
+
 ## Documentation
 
 - [Project Context](docs/architecture/project-context.md)
@@ -370,6 +401,8 @@ Detailed design lives in [Patients Domain](docs/architecture/patients.md).
 - [Background Jobs](docs/architecture/background-jobs.md)
 - [Durable Audit Logs](docs/architecture/audit-logs.md)
 - [Patients Domain](docs/architecture/patients.md)
+- [Professionals Domain](docs/architecture/professionals-domain.md)
+- [Professionals API](docs/api/professionals.md)
 - [Security](docs/architecture/security.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
@@ -408,6 +441,7 @@ Additional architecture documents and ADRs will be added as implementation intro
 ### Clinic Operations
 
 - patient management (complete for the approved tenant-scoped clinical-record boundary);
+- professional provider profiles (complete for the approved tenant-scoped provider-profile boundary);
 - appointment lifecycle;
 - reminder jobs;
 - tenant and entitlement enforcement.
@@ -428,7 +462,7 @@ Additional architecture documents and ADRs will be added as implementation intro
 - billing webhook asynchronous processing;
 - retry and dead-job behavior;
 - Durable Audit Logs;
-- Professionals Domain;
+- Professionals Domain (complete);
 - Final Hardening and portfolio release.
 
 ---
@@ -439,6 +473,7 @@ The following capabilities are intentionally deferred from v1:
 
 - frontend dashboard;
 - patient portal;
+- provider portal;
 - patient authentication;
 - OAuth providers;
 - real email delivery;
@@ -446,6 +481,7 @@ The following capabilities are intentionally deferred from v1:
 - regional payment integrations;
 - cross-tenant patient identity;
 - tenant-configurable custom roles;
+- external credential verification;
 - microservices;
 - external message brokers;
 - Kubernetes;

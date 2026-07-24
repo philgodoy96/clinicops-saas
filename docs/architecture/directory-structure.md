@@ -57,7 +57,8 @@ clinicops-saas/
 │       ├── api/
 │       │   └── v1/
 │       │       ├── audit_logs.py
-│       │       └── patients.py
+│       │       ├── patients.py
+│       │       └── professionals.py
 │       ├── authentication/
 │       ├── authorization/
 │       ├── billing/
@@ -76,6 +77,9 @@ clinicops-saas/
 │       ├── patients/
 │       │   ├── repositories/
 │       │   └── services/
+│       ├── professionals/
+│       │   ├── repositories/
+│       │   └── services/
 │       ├── tenancy/
 │       ├── main.py
 │       └── worker.py
@@ -83,10 +87,12 @@ clinicops-saas/
 ├── tests/
 │   ├── integration/
 │   │   ├── audit/
-│   │   └── patients/
+│   │   ├── patients/
+│   │   └── professionals/
 │   └── unit/
 │       ├── audit/
-│       └── patients/
+│       ├── patients/
+│       └── professionals/
 │
 ├── .dockerignore
 ├── .env.example
@@ -102,9 +108,10 @@ clinicops-saas/
 The current tree reflects implemented capabilities only. It includes the durable
 background-job queue package, worker runtime entry point, billing webhook job
 handler, Durable Audit Logs package, tenant-scoped audit HTTP route, Patients
-package, tenant-scoped patients HTTP route, Dockerfile, and Compose `api` and
-`worker` services. It does not yet include the professionals package, ADR
-directory, or a dedicated security-test directory.
+package, tenant-scoped patients HTTP route, Professionals package,
+tenant-scoped professionals HTTP route, Dockerfile, and Compose `api` and
+`worker` services. It does not yet include the ADR directory or a dedicated
+security-test directory.
 
 ---
 
@@ -140,7 +147,7 @@ clinicops-saas/
 │       ├── jobs/            # durable queue and worker runtime implemented
 │       ├── audit/           # Durable Audit Logs implemented
 │       ├── patients/        # Patients Domain implemented
-│       ├── professionals/   # Professionals Domain
+│       ├── professionals/   # Professionals Domain implemented
 │       ├── main.py
 │       └── worker.py
 │
@@ -164,16 +171,14 @@ This is the target structure for remaining milestones.
 
 The durable `jobs/` queue foundation, worker runtime entry point, billing job
 handler packages, Durable Audit Logs package, audit HTTP route, Patients
-package, patients HTTP route, Dockerfile, and Compose worker service already
-exist in the current tree. The professionals package remains a target
-introduction.
+package, patients HTTP route, Professionals package, professionals HTTP route,
+Dockerfile, and Compose worker service already exist in the current tree.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
-Exact internal filenames inside `professionals/` remain subject to system
-design approval for that milestone. Audit and patients filenames are fixed by
-the implemented packages and API routes.
+Audit, patients, and professionals filenames are fixed by the implemented
+packages and API routes.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -248,7 +253,8 @@ Examples:
 - billing and webhook processing;
 - background job queue and worker execution;
 - durable audit logs;
-- patients domain.
+- patients domain;
+- professionals domain.
 
 #### `docs/adr/`
 
@@ -435,11 +441,6 @@ billing
 jobs
 audit
 patients
-```
-
-Remaining current-release packages are expected to include:
-
-```text
 professionals
 ```
 
@@ -453,7 +454,11 @@ audit facts through `AuditRecorder`, and `src/clinicops/api/v1/audit_logs.py`
 exposes the tenant-scoped read API. The `patients` package owns tenant-scoped
 patient persistence, lifecycle workflows, validation, cursor pagination,
 contracts, public schemas, and audit emission, with HTTP composition under
-`src/clinicops/api/v1/patients.py`.
+`src/clinicops/api/v1/patients.py`. The `professionals` package owns
+tenant-scoped professional persistence, lifecycle and membership-link
+workflows, validation, cursor pagination, contracts, public schemas, and
+domain-specific audit command builders, with HTTP composition under
+`src/clinicops/api/v1/professionals.py`.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -1048,6 +1053,9 @@ billing webhook processing and worker handler
 
 patients services
     -> create, update, archive, and restore
+
+professionals services
+    -> create, update, archive, restore, membership link and unlink
 ```
 
 Intentionally deferred under audit:
@@ -1057,7 +1065,6 @@ export and retention jobs
 platform-wide audit history
 metadata search
 actor and date-range filters
-Professionals audit integration
 frontend audit screens
 ```
 
@@ -1157,6 +1164,107 @@ global or cross-tenant patient identity
 Detailed patient semantics live in `docs/architecture/patients.md`.
 
 Patient models are registered centrally through:
+
+```text
+src/clinicops/db/models.py
+```
+
+---
+
+## Professionals Package
+
+The implemented professionals package provides tenant-scoped professional
+profiles under `src/clinicops`.
+
+```text
+src/clinicops/professionals/
+├── __init__.py
+├── audit.py
+├── contracts.py
+├── cursor.py
+├── enums.py
+├── exceptions.py
+├── models.py
+├── schemas.py
+├── validation.py
+├── repositories/
+│   ├── __init__.py
+│   └── professional_repository.py
+└── services/
+    ├── __init__.py
+    ├── archive_professional.py
+    ├── create_professional.py
+    ├── get_professional.py
+    ├── link_professional_membership.py
+    ├── list_professionals.py
+    ├── restore_professional.py
+    ├── unlink_professional_for_membership_removal.py
+    ├── unlink_professional_membership.py
+    └── update_professional.py
+```
+
+HTTP composition and schema migration:
+
+```text
+src/clinicops/api/v1/professionals.py
+migrations/versions/0011_add_professionals.py
+```
+
+Supporting tests and architecture documentation:
+
+```text
+tests/
+├── unit/professionals/
+└── integration/professionals/
+
+docs/architecture/professionals-domain.md
+```
+
+Capability-level ownership:
+
+```text
+contracts.py / validation.py
+    -> domain contracts and shared field constraints
+
+models.py / repositories/
+    -> persistence and guarded mutations with tenant scoping and row locks
+
+services/
+    -> create, get, list, update, archive, restore, membership link and
+       unlink orchestration and transaction boundaries
+
+schemas.py / api/v1/professionals.py
+    -> public request and response transport contracts and tenant-scoped
+       professionals HTTP routes
+
+audit.py
+    -> domain-specific audit command builders for professional lifecycle
+       and membership association facts
+
+enums.py
+    -> stable professional lifecycle status identifiers
+
+exceptions.py
+    -> professional-domain application errors
+
+cursor.py
+    -> opaque URL-safe Base64 cursor encode and decode
+```
+
+Intentionally deferred under professionals:
+
+```text
+appointments and scheduling workflows
+payroll and compensation
+external credential verification
+bulk import or export
+global or cross-tenant professional identity
+```
+
+Detailed professional semantics live in
+`docs/architecture/professionals-domain.md`.
+
+Professional models are registered centrally through:
 
 ```text
 src/clinicops/db/models.py

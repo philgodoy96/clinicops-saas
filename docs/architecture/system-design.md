@@ -166,6 +166,51 @@ Detailed design lives in [Patients Domain](patients.md).
 
 ---
 
+### Professionals
+
+Owns:
+
+* tenant-scoped clinical provider profiles.
+
+Responsibilities:
+
+* tenant-scoped professional creation;
+* listing and retrieval with keyset pagination;
+* partial update with optimistic concurrency;
+* archive and restore;
+* optional Membership association;
+* professional audit emission;
+* unlink on Membership removal while preserving the Professional.
+
+`Professional` and `Membership` remain separate entities:
+
+```text
+Professional
+    -> tenant-owned clinical provider profile
+
+Membership
+    -> platform access and tenant authorization
+```
+
+Architecture decisions:
+
+* Professional and Membership remain separate entities;
+* optional one-to-one association;
+* same-tenant composite foreign key;
+* one Membership may link to at most one Professional;
+* active and archived Professional lifecycle;
+* no hard delete endpoint;
+* expected-version optimistic concurrency;
+* keyset pagination ordered by `created_at DESC, id DESC`;
+* tenant-local external reference uniqueness;
+* Membership removal unlinks and preserves the Professional in one transaction;
+* audit writes share mutation transactions;
+* routes own commit, services and repositories do not.
+
+Detailed design lives in [Professionals Domain](professionals-domain.md).
+
+---
+
 ### Appointments
 
 Owns:
@@ -301,6 +346,9 @@ Invitations
 Patients
   Patient
 
+Professionals
+  Professional
+
 Appointments
   Appointment
 
@@ -405,6 +453,7 @@ This rule applies to:
 * memberships;
 * invitations;
 * patients;
+* professionals;
 * appointments;
 * subscriptions;
 * invoices;
@@ -984,7 +1033,7 @@ Offset pagination is appropriate for relatively small operational lists:
 * invitations;
 * invoices.
 
-Patients use opaque keyset pagination ordered by:
+Patients and professionals use opaque keyset pagination ordered by:
 
 ```text
 created_at DESC, id DESC
@@ -1104,15 +1153,16 @@ Extraction should follow operational evidence rather than architectural speculat
 8. Authorization reads current membership state from the database.
 9. Every tenant has exactly one active owner.
 10. Patients are independent tenant-owned records.
-11. Platform Admin authorization is separate from tenant RBAC.
-12. Complex workflows use application services.
-13. Critical workflows use explicit database transactions.
-14. Webhook processing is authenticated and idempotent.
-15. Domain changes and required jobs may commit atomically.
-16. Background jobs use PostgreSQL locking.
-17. Background execution is at least once.
-18. Audit logs and application logs are distinct.
-19. Request IDs identify individual executions.
-20. Correlation IDs connect broader workflows.
-21. Offset and cursor pagination are selected by resource behavior.
-22. Microservices, Redis, and external brokers are intentionally deferred.
+11. Professionals are tenant-owned clinical provider profiles, separate from Memberships, with an optional same-tenant one-to-one association.
+12. Platform Admin authorization is separate from tenant RBAC.
+13. Complex workflows use application services.
+14. Critical workflows use explicit database transactions.
+15. Webhook processing is authenticated and idempotent.
+16. Domain changes and required jobs may commit atomically.
+17. Background jobs use PostgreSQL locking.
+18. Background execution is at least once.
+19. Audit logs and application logs are distinct.
+20. Request IDs identify individual executions.
+21. Correlation IDs connect broader workflows.
+22. Offset and cursor pagination are selected by resource behavior.
+23. Microservices, Redis, and external brokers are intentionally deferred.
