@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -64,8 +65,10 @@ from clinicops.billing.webhooks.signatures import sign_billing_webhook_payload
 from clinicops.core.config import Environment, Settings
 from clinicops.db.session import get_engine
 from clinicops.jobs.contracts import (
+    ClaimedBackgroundJob,
     EnqueueBackgroundJobCommand,
     EnqueuedBackgroundJob,
+    JSONObject,
 )
 from clinicops.jobs.enums import BackgroundJobStatus
 from clinicops.jobs.models import BackgroundJob
@@ -585,27 +588,68 @@ def _seal_job(job_id: UUID) -> None:
         session.commit()
 
 
-def _open_claim_window(job_id: UUID) -> None:
-    with Session(get_engine()) as session:
-        job = session.get(BackgroundJob, job_id)
+def _take_owned_job_claim(
+    *,
+    engine: Engine,
+    job_id: UUID,
+    worker_id: str,
+    lease_duration: timedelta,
+) -> ClaimedBackgroundJob:
+    """Claim one owned row by primary key without opening a global claim window.
+
+    Shared compose workers poll ``available_at <= now()``. Keeping the row sealed
+    until this locked transition to PROCESSING prevents them from stealing it.
+    """
+
+    with Session(engine) as session:
+        job = session.execute(
+            select(BackgroundJob).where(BackgroundJob.id == job_id).with_for_update()
+        ).scalar_one_or_none()
         assert job is not None
-        assert job.status in {
-            BackgroundJobStatus.QUEUED,
-            BackgroundJobStatus.RETRY_SCHEDULED,
-        }
+
+        if job.status is BackgroundJobStatus.SUCCEEDED:
+            raise AssertionError(
+                f"Owned webhook job {job_id} was already completed before the test claimed it."
+            )
+        if job.status is BackgroundJobStatus.DEAD_LETTERED:
+            raise AssertionError(
+                f"Owned webhook job {job_id} was dead-lettered before the test claimed it."
+            )
 
         database_time = session.scalar(select(func.now()))
         assert database_time is not None
+        claim_token = uuid4()
+        lease_expires_at = database_time + lease_duration
+
+        job.status = BackgroundJobStatus.PROCESSING
         job.priority = _TEST_JOB_PRIORITY
-        job.available_at = database_time - timedelta(hours=1)
+        job.available_at = database_time
+        job.processing_attempt_count = 1
+        job.worker_id = worker_id
+        job.claim_token = claim_token
+        job.claimed_at = database_time
+        job.lease_expires_at = lease_expires_at
+        job.completed_at = None
+        job.last_failed_at = None
+        job.last_error_code = None
+        job.last_error_message = None
+
+        claimed = ClaimedBackgroundJob(
+            job_id=job.id,
+            job_type=job.job_type,
+            payload_version=job.payload_version,
+            payload=cast(JSONObject, dict(job.payload)),
+            processing_attempt_count=job.processing_attempt_count,
+            max_attempts=job.max_attempts,
+            worker_id=worker_id,
+            claim_token=claim_token,
+            claimed_at=database_time,
+            lease_expires_at=lease_expires_at,
+            correlation_id=job.correlation_id,
+            origin_request_id=job.origin_request_id,
+        )
         session.commit()
-
-
-def _prepare_owned_job_for_claim(job_id: UUID) -> None:
-    """Clear competitors, then open the owned claim window."""
-
-    _clear_competing_claimable_jobs(job_id)
-    _open_claim_window(job_id)
+        return claimed
 
 
 def _run_owned_job(
@@ -614,13 +658,23 @@ def _run_owned_job(
     job_id: UUID,
     process_webhook_event: ClaimVisibilityProbe,
 ) -> WorkerIterationResult:
+    """Execute an owned job through the worker path without a stealable claim window."""
+
+    lease_duration = timedelta(minutes=5)
     worker = _build_worker(
         engine=engine,
         process_webhook_event=process_webhook_event,
         worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
+        lease_duration=lease_duration,
     )
-    _prepare_owned_job_for_claim(job_id)
-    return worker.run_once()
+    _seal_job(job_id)
+    claimed = _take_owned_job_claim(
+        engine=engine,
+        job_id=job_id,
+        worker_id=worker.worker_id,
+        lease_duration=lease_duration,
+    )
+    return worker._execute_claimed_job(claimed)
 
 
 def _retry_policy() -> BackgroundJobRetryPolicy:
@@ -636,6 +690,7 @@ def _build_worker(
     engine: Engine,
     process_webhook_event: ClaimVisibilityProbe,
     worker_id: str,
+    lease_duration: timedelta = timedelta(minutes=5),
 ) -> BackgroundWorker:
     handler = ProcessBillingWebhookEventJobHandler(process_webhook_event)
     return BackgroundWorker(
@@ -646,7 +701,7 @@ def _build_worker(
         registry=JobHandlerRegistry([handler]),
         worker_id=worker_id,
         poll_interval=timedelta(seconds=1),
-        lease_duration=timedelta(minutes=5),
+        lease_duration=lease_duration,
         stale_recovery_interval=timedelta(minutes=1),
         stale_recovery_batch_size=50,
     )
@@ -669,8 +724,8 @@ def _enqueue_replay_job(
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
                 priority=_TEST_JOB_PRIORITY,
-                # Keep the replay row non-claimable until _prepare_owned_job_for_claim
-                # opens the window immediately before worker.run_once().
+                # Keep the replay row non-claimable until _run_owned_job takes
+                # it by primary key under FOR UPDATE.
                 available_at=database_time + timedelta(hours=1),
             )
         )
@@ -914,13 +969,11 @@ def test_duplicate_webhook_delivery_reuses_event_and_processing_job() -> None:
         assert _job_count_for_webhook_event_id(event.id) == 1
 
         probe = ClaimVisibilityProbe(job_id=job.id, engine=engine)
-        worker = _build_worker(
+        first_result = _run_owned_job(
             engine=engine,
+            job_id=job.id,
             process_webhook_event=probe,
-            worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
         )
-        _prepare_owned_job_for_claim(job.id)
-        first_result = worker.run_once()
 
         assert first_result.outcome is WorkerIterationOutcome.SUCCEEDED
         assert first_result.job_id == job.id
@@ -931,7 +984,12 @@ def test_duplicate_webhook_delivery_reuses_event_and_processing_job() -> None:
         assert completed_job.status is BackgroundJobStatus.SUCCEEDED
         assert completed_event.status is BillingWebhookEventStatus.PROCESSED
 
-        second_result = worker.run_once()
+        _clear_competing_claimable_jobs()
+        second_result = _build_worker(
+            engine=engine,
+            process_webhook_event=probe,
+            worker_id=f"billing-webhook-worker-{uuid4().hex[:12]}",
+        ).run_once()
 
         assert second_result.outcome is WorkerIterationOutcome.IDLE
         assert second_result.job_id is None
