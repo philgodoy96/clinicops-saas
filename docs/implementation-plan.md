@@ -2,81 +2,70 @@
 
 ## 1. Purpose
 
-This document defines the planned delivery sequence for ClinicOps SaaS.
+This document is the delivery history and engineering sequence used to build the approved ClinicOps SaaS portfolio release.
 
-The roadmap organizes the system into incremental engineering milestones so that each capability can be implemented, tested, reviewed, and documented without introducing unrelated scope.
+It records how capabilities were ordered by technical dependency, what was delivered in each slice, which reliability risks were addressed, and which completion criteria were met.
 
-The plan focuses on technical dependencies, observable outcomes, reliability risks, and completion criteria.
-
-Detailed module scaffolds may evolve as implementation exposes concrete complexity, but the architectural boundaries defined in the project documentation remain authoritative.
+Detailed module scaffolds may have evolved as implementation exposed concrete complexity; the architectural boundaries defined in the project documentation remain authoritative.
 
 ---
 
 ## 2. Delivery Principles
 
-ClinicOps will be delivered through small, coherent changes.
+ClinicOps was delivered through small, coherent changes.
 
-Each implementation milestone should:
+Each implementation milestone:
 
-- introduce one primary capability;
-- preserve a working main branch;
-- include the database migration required by the capability;
-- include tests proportional to engineering risk;
-- update technical documentation when behavior or architecture changes;
-- avoid unrelated refactors;
-- preserve tenant isolation and authorization boundaries;
-- expose observable behavior through an API, worker, migration, script, or test.
+- introduced one primary capability;
+- preserved a working main branch;
+- included the database migration required by the capability;
+- included tests proportional to engineering risk;
+- updated technical documentation when behavior or architecture changed;
+- avoided unrelated refactors;
+- preserved tenant isolation and authorization boundaries;
+- exposed observable behavior through an API, worker, migration, script, or test.
 
-The roadmap follows dependency order rather than feature visibility.
+Delivery followed dependency order rather than feature visibility.
 
-Foundational capabilities are implemented before the business workflows that depend on them.
+Foundational capabilities were implemented before the business workflows that depend on them.
 
 ---
 
-## 3. Milestone Overview
+## 3. Completed Delivery Overview
 
-### Completed foundation
+### Completed portfolio scope
 
-The following capabilities are already implemented and are not remaining current-release milestones:
+The following capabilities comprise the approved portfolio release:
 
 ```text
 Application Foundation
 Request Context and Logging
-Identity Foundation
+Identity
 Authentication and Session Lifecycle
 Tenant and Membership Foundation
-Tenant Authorization and Ownership
+Authorization and Ownership
 Invitation Onboarding
-Billing Foundation
-Fake Payment Provider and Webhook Security
-Idempotent Webhook Processing
-Billing Reconciliation and Concurrency Protections
+Billing
+Fake Provider and Webhooks
+Reconciliation and Concurrency
 Background Jobs & Worker
-Durable Audit Log Foundation
-Durable Audit Log Integrations
-Patients Domain
-Professionals Domain
+Durable Audit Logs
+Patients
+Professionals
+Final Hardening & Portfolio Release
 ```
 
-Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, the Durable Audit Log Foundation, Durable Audit Log Integrations, Patients Domain, and Professionals Domain.
+Completed work includes the FastAPI application, PostgreSQL and Alembic, global identity, authentication sessions with refresh-token rotation, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, billing customer and subscription persistence, local price catalog, fake payment provider, idempotent provider operations, subscription creation and read APIs, scheduled plan changes, scheduled cancellation, webhook authentication and durable ingestion, webhook processing, provider state ordering, billing reconciliation, concurrency protections, request and correlation identifiers, the PostgreSQL-backed durable job queue, worker runtime, billing webhook job integration, API and worker container services, Durable Audit Log foundation and integrations, Patients Domain, Professionals Domain, and Final Hardening & Portfolio Release.
 
-Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary. Remaining work does not reopen that boundary as incomplete.
+Billing is complete for its approved synchronous, local-provider, and asynchronous webhook-job boundary.
 
-Background Jobs & Worker is complete. Periodic reconciliation scheduling remains intentionally deferred beyond that milestone.
+Background Jobs & Worker is complete. Periodic reconciliation scheduling remains intentionally deferred.
 
 Durable Audit Logs are complete, including foundation persistence, domain and worker emission, and the tenant-scoped OWNER/ADMIN read API.
 
 Patients Domain is complete, including tenant-owned patient persistence, contracts, repository isolation, create/read/list/search, partial optimistic update, archive and restore, FastAPI transport with RBAC, Problem Details, transactionally coupled audit events, authenticated integration coverage, and domain documentation.
 
 Professionals Domain is complete, including tenant-owned professional persistence and migration, domain contracts and normalization, repository isolation, create/read/list/update, archive and restore, explicit Membership link and unlink, Membership-removal integration, audit actions, FastAPI transport with RBAC, Problem Details mappings, authenticated integration coverage for isolation, concurrency, and transactional integrity, and public documentation.
-
-### Remaining current-release milestones
-
-```text
-Final Hardening
-```
-
-Final Hardening is the active implementation slice.
 
 ---
 
@@ -309,13 +298,13 @@ milestone.
 
 ---
 
-## 9. Milestone 1 — Final Hardening & Portfolio Release
+## 9. Completed — Final Hardening & Portfolio Release
 
 ### Objective
 
 Stabilize the integrated system and prepare the repository as a coherent portfolio artifact.
 
-### Primary Deliverables
+### Completed review scope
 
 - full test-suite stabilization;
 - migration verification;
@@ -335,23 +324,23 @@ Stabilize the integrated system and prepare the repository as a coherent portfol
 - release checklist;
 - repository cleanup.
 
-### Engineering Risks
+### Engineering risks reviewed
 
 - happy-path-only confidence;
 - documentation drift from implemented behavior;
 - local and CI configuration drift;
 - incomplete failure coverage for jobs, audit, and operational domains.
 
-### Review Focus
+### Review outcomes
 
-- documentation accuracy;
-- setup reproducibility;
-- implementation and architecture consistency;
-- quality of failure-mode coverage;
-- clarity of design decisions;
-- completeness of repository navigation.
+- documentation aligned with implementation;
+- setup path corrected;
+- architecture and status cleaned up;
+- intentional deferrals consolidated;
+- repository navigation finalized;
+- validation commands documented for local and CI use.
 
-### Completion Criteria
+### Completion criteria met
 
 - a new engineer can run and understand the system;
 - the implemented scope is accurately documented;
@@ -359,9 +348,17 @@ Stabilize the integrated system and prepare the repository as a coherent portfol
 
 ---
 
+## Release Status
+
+ClinicOps is feature-complete for the approved portfolio scope.
+There are no remaining required macro-milestones.
+Future work is limited to intentional extensions, maintenance, and optional deployment hardening.
+
+---
+
 ## 10. Intentionally Deferred Extensions
 
-The following capabilities are intentionally deferred beyond the current release and are not remaining macro-milestones:
+The following capabilities are intentionally deferred beyond the approved portfolio release:
 
 - Appointments;
 - appointment scheduling;
@@ -443,16 +440,16 @@ A milestone is complete when:
 
 ## 13. Roadmap Evolution
 
-This roadmap may evolve as implementation reveals new constraints.
+Future scope beyond this portfolio release would be evaluated as a new roadmap, not as unfinished work from the current release.
 
-A meaningful roadmap change should document:
+Any such roadmap should document:
 
 - the technical reason for the change;
 - affected dependencies;
 - whether scope changed;
 - whether the change alters architecture or only delivery order.
 
-Roadmap changes should preserve the project's primary goals:
+New roadmap work should preserve the project's primary goals:
 
 - tenant isolation;
 - authorization correctness;
@@ -461,9 +458,3 @@ Roadmap changes should preserve the project's primary goals:
 - durable asynchronous execution;
 - auditability;
 - maintainable module boundaries.
-
----
-
-## 14. Next Milestone
-
-The next implementation milestone is Final Hardening & Portfolio Release.

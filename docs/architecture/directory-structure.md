@@ -6,7 +6,7 @@ This document defines the directory structure principles for ClinicOps SaaS.
 
 The structure must communicate architectural boundaries, module ownership, testing strategy, runtime responsibilities, and the incremental evolution of the codebase.
 
-The document distinguishes the current repository layout from the target structure expected as remaining milestones land. Paths must be introduced only when their corresponding responsibilities exist.
+The document describes the implemented portfolio-release repository structure and the evolution rules that govern future structural changes. Paths must be introduced only when their corresponding responsibilities exist.
 
 ---
 
@@ -37,9 +37,9 @@ How is this behavior tested?
 
 ---
 
-## 3. Current Structure
+## 3. Implemented Repository Structure
 
-The repository currently follows a top-level domain package layout under `src/clinicops` rather than a nested `modules/` tree.
+The repository follows a top-level domain package layout under `src/clinicops` rather than a nested `modules/` tree.
 
 ```text
 clinicops-saas/
@@ -47,6 +47,7 @@ clinicops-saas/
 │   └── workflows/
 │
 ├── docs/
+│   ├── api/
 │   ├── architecture/
 │   └── development/
 │
@@ -56,13 +57,21 @@ clinicops-saas/
 │   └── clinicops/
 │       ├── api/
 │       │   └── v1/
+│       │       ├── authentication/
+│       │       ├── billing/
+│       │       ├── invitations/
+│       │       ├── tenants/
 │       │       ├── audit_logs.py
+│       │       ├── health.py
 │       │       ├── patients.py
 │       │       └── professionals.py
 │       ├── authentication/
 │       ├── authorization/
 │       ├── billing/
 │       │   ├── jobs/
+│       │   ├── providers/
+│       │   ├── repositories/
+│       │   ├── services/
 │       │   └── webhooks/
 │       ├── cli/
 │       ├── core/
@@ -70,7 +79,9 @@ clinicops-saas/
 │       ├── identity/
 │       ├── invitations/
 │       ├── jobs/
-│       │   └── runtime/
+│       │   ├── repositories/
+│       │   ├── runtime/
+│       │   └── services/
 │       ├── audit/
 │       │   ├── repositories/
 │       │   └── services/
@@ -86,13 +97,7 @@ clinicops-saas/
 │
 ├── tests/
 │   ├── integration/
-│   │   ├── audit/
-│   │   ├── patients/
-│   │   └── professionals/
 │   └── unit/
-│       ├── audit/
-│       ├── patients/
-│       └── professionals/
 │
 ├── .dockerignore
 ├── .env.example
@@ -105,90 +110,28 @@ clinicops-saas/
 └── README.md
 ```
 
-The current tree reflects implemented capabilities only. It includes the durable
-background-job queue package, worker runtime entry point, billing webhook job
-handler, Durable Audit Logs package, tenant-scoped audit HTTP route, Patients
-package, tenant-scoped patients HTTP route, Professionals package,
-tenant-scoped professionals HTTP route, Dockerfile, and Compose `api` and
-`worker` services. It does not yet include the ADR directory or a dedicated
-security-test directory.
-
----
-
-## 4. Target Structure for Remaining Milestones
-
-```text
-clinicops-saas/
-├── .github/
-│   └── workflows/
-│
-├── docs/
-│   ├── architecture/
-│   ├── adr/
-│   ├── api/
-│   └── development/
-│
-├── migrations/
-│
-├── scripts/
-│
-├── src/
-│   └── clinicops/
-│       ├── api/
-│       ├── authentication/
-│       ├── authorization/
-│       ├── billing/
-│       ├── cli/
-│       ├── core/
-│       ├── db/
-│       ├── identity/
-│       ├── invitations/
-│       ├── tenancy/
-│       ├── jobs/            # durable queue and worker runtime implemented
-│       ├── audit/           # Durable Audit Logs implemented
-│       ├── patients/        # Patients Domain implemented
-│       ├── professionals/   # Professionals Domain implemented
-│       ├── main.py
-│       └── worker.py
-│
-├── tests/
-│   ├── factories/
-│   ├── unit/
-│   ├── integration/
-│   └── security/
-│
-├── .env.example
-├── .gitignore
-├── alembic.ini
-├── compose.yml
-├── Dockerfile
-├── Makefile
-├── pyproject.toml
-└── README.md
-```
-
-This is the target structure for remaining milestones.
-
-The durable `jobs/` queue foundation, worker runtime entry point, billing job
-handler packages, Durable Audit Logs package, audit HTTP route, Patients
-package, patients HTTP route, Professionals package, professionals HTTP route,
-Dockerfile, and Compose worker service already exist in the current tree.
+This tree reflects the feature-complete portfolio-release layout. It includes the
+durable background-job queue package, worker runtime entry point, billing webhook
+job handler, Durable Audit Logs package, Patients package, Professionals
+package, their tenant-scoped HTTP routes, Dockerfile, and Compose `api` and
+`worker` services.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
-Audit, patients, and professionals filenames are fixed by the implemented
-packages and API routes.
-
-Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
+Appointments and platform administration remain intentionally deferred and are
+not represented as required packages.
 
 ---
 
-## 5. Incremental Scaffold Rule
+## 4. Incremental Scaffold Rule
 
-The internal structure of each module must be designed before the implementation slice that introduces it.
+Structure changes must follow concrete responsibility.
 
-Each slice must define:
+New directories require actual code or documentation ownership. Empty scaffolding
+is avoided.
+
+When a structural change is warranted, define:
 
 ```text
 Affected modules
@@ -201,15 +144,16 @@ Expected future evolution
 
 Module internals do not need identical depth.
 
-A small module may begin with a compact structure.
+A small module may use a compact structure.
 
-A larger module with multiple entities and workflows may begin with separate packages for APIs, models, schemas, repositories, and services.
+A larger module with multiple entities and workflows may use separate packages
+for APIs, models, schemas, repositories, and services.
 
 The structure should follow actual complexity rather than a universal template.
 
 ---
 
-## 6. Root-Level Directories
+## 5. Root-Level Directories
 
 ### `.github/`
 
@@ -234,10 +178,9 @@ Contains public technical documentation.
 
 ```text
 docs/
+├── api/
 ├── architecture/
-├── development/
-├── adr/          # target for remaining milestones
-└── api/          # target for remaining milestones
+└── development/
 ```
 
 #### `docs/architecture/`
@@ -256,24 +199,18 @@ Examples:
 - patients domain;
 - professionals domain.
 
-#### `docs/adr/`
-
-Target location for Architecture Decision Records covering decisions with meaningful alternatives and long-term consequences.
-
-Examples may include:
-
-```text
-0001-use-modular-monolith.md
-0002-use-global-user-identities.md
-0003-use-postgres-backed-job-queue.md
-0004-use-fake-payment-provider-first.md
-```
-
-Not every technical choice requires an ADR.
-
 #### `docs/api/`
 
-Target location for request examples and API usage notes that complement generated OpenAPI documentation.
+Contains public API usage documents such as the Professionals API.
+
+OpenAPI remains the generated contract surface. Usage documents complement that
+contract with request examples and operational notes.
+
+#### ADRs
+
+Architecture Decision Records may be introduced later when a decision warrants a
+durable decision record. An ADR directory is not required for project
+completion.
 
 ---
 
@@ -287,30 +224,29 @@ Application startup must not silently create or alter the production schema.
 
 ---
 
-### `scripts/`
-
-Target location for operational and development utilities as remaining milestones require them.
-
-Examples may include:
-
-- seed subscription plans;
-- simulate signed payment webhooks;
-- validate local environment setup;
-- worker operational helpers.
-
-Scripts should reuse application services where practical and must not duplicate business rules.
-
----
-
 ### `tests/`
 
 Contains automated tests grouped by confidence type rather than mirroring source files mechanically.
 
-The test structure should make critical security and reliability behavior easy to locate.
+Tests are organized under `tests/unit/` and `tests/integration/`. High-risk
+security boundaries are currently exercised inside those suites rather than in
+a separate top-level security directory.
+
+Optional future organization such as a dedicated `tests/security/` tree or a
+`tests/factories/` package may be introduced only when a concrete need
+justifies the split.
 
 ---
 
-## 7. Application Entry Points
+### Optional root utilities
+
+A `scripts/` directory or root `Makefile` may be added later as optional
+organizational choices when operational or development utilities have concrete
+ownership. They are not required paths for the portfolio release.
+
+---
+
+## 6. Application Entry Points
 
 ### `main.py`
 
@@ -355,7 +291,7 @@ composition root lives in `src/clinicops/worker.py`.
 
 ---
 
-## 8. Top-Level Application Packages
+## 7. Top-Level Application Packages
 
 ### `api/`
 
@@ -429,7 +365,7 @@ Entity models remain owned by their modules.
 
 Business and platform capabilities live as top-level packages under `src/clinicops`.
 
-Currently implemented packages include:
+Implemented packages:
 
 ```text
 identity
@@ -462,7 +398,7 @@ domain-specific audit command builders, with HTTP composition under
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
-Appointments and platform administration are intentionally deferred beyond the current release and are not required packages for the remaining milestones.
+Appointments and platform administration remain intentionally deferred and are not required packages.
 
 ---
 
@@ -481,7 +417,7 @@ state transitions.
 
 ---
 
-## 9. Module Internal Structure
+## 8. Module Internal Structure
 
 A module with multiple sub-responsibilities may use:
 
@@ -617,7 +553,7 @@ Explicit exceptions make workflow behavior easier to test and reason about.
 
 ---
 
-## 10. Example Tenant Package Structure
+## 9. Example Tenant Package Structure
 
 The tenancy package has multiple entities and workflows, so it may justify a package-oriented structure.
 
@@ -1272,7 +1208,7 @@ src/clinicops/db/models.py
 
 ---
 
-## 11. Naming Guidance
+## 10. Naming Guidance
 
 Use entity-oriented names for persistent models and transport schemas.
 
@@ -1319,7 +1255,7 @@ unless their responsibility is explicit and narrow.
 
 ---
 
-## 12. Dependency Direction
+## 11. Dependency Direction
 
 The intended dependency direction is:
 
@@ -1351,7 +1287,7 @@ Rules:
 
 ---
 
-## 13. Testing Structure
+## 12. Testing Structure
 
 ### `tests/unit/`
 
@@ -1364,7 +1300,13 @@ Examples:
 - invitation expiration;
 - subscription lifecycle rules;
 - retry calculations;
-- HMAC verification.
+- HMAC verification;
+- RBAC policy decisions;
+- cross-tenant authorization rejection at the unit boundary.
+
+Unit tests are organized by owning package under `tests/unit/` (for example
+`api/`, `audit/`, `authentication/`, `authorization/`, `billing/`, `identity/`,
+`invitations/`, `jobs/`, `patients/`, `professionals/`, and `tenancy/`).
 
 ---
 
@@ -1376,42 +1318,28 @@ Examples:
 
 - login and token refresh;
 - invitation acceptance transactions;
-- tenant-scoped patient access;
+- tenant-scoped patient and professional access;
 - duplicate webhook handling;
 - background job enqueue, claim, completion, failure, concurrency, and
   worker-runtime behavior;
 - end-to-end billing webhook job execution;
 - audit persistence, idempotent recording, tenant isolation, concurrency, and
-  rollback coupling.
+  rollback coupling;
+- cross-tenant access rejection and revoked-token behavior at the HTTP boundary.
+
+Integration tests are organized by owning package under `tests/integration/`
+(for example `api/`, `audit/`, `authentication/`, `authorization/`, `billing/`,
+`identity/`, `invitations/`, `jobs/`, `patients/`, `professionals/`, and
+`tenancy/`).
+
+High-risk security boundaries are currently tested inside these unit and
+integration suites. Dedicated `tests/security/` or `tests/factories/`
+directories are optional future organizational choices and are not required
+paths.
 
 ---
 
-### `tests/security/`
-
-Target location for high-risk boundary tests once that organization is useful.
-
-Examples:
-
-- cross-tenant access rejection;
-- RBAC enforcement;
-- invalid webhook signature rejection;
-- revoked token behavior.
-
-The repository currently places many of these concerns under `tests/unit/` and
-`tests/integration/`. A dedicated `tests/security/` directory remains a target
-organization, not a claim about the current tree.
-
----
-
-### `tests/factories/`
-
-Provides valid test data builders while keeping tenant ownership and membership roles visible.
-
-Factories must not hide important relationships that are relevant to the behavior under test.
-
----
-
-## 14. Structures Intentionally Avoided Initially
+## 13. Structures Intentionally Avoided Initially
 
 Do not introduce without a concrete need:
 
@@ -1432,7 +1360,7 @@ Explicit code is preferred over speculative abstraction.
 
 ---
 
-## 15. Evolution Rule
+## 14. Evolution Rule
 
 A file should become a package when:
 

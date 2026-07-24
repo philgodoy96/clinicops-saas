@@ -2,9 +2,9 @@
 
 ## 1. Purpose
 
-This guide explains how to run, validate, and troubleshoot the ClinicOps SaaS application foundation in a local development environment.
+This guide explains how to run, validate, and troubleshoot ClinicOps SaaS locally.
 
-The current foundation includes:
+The local development stack includes:
 
 - Python 3.12;
 - dependency management through `uv`;
@@ -48,7 +48,7 @@ uv python install 3.12
 ## 3. Clone and Enter the Repository
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/philgodoy96/clinicops-saas.git
 cd clinicops-saas
 ```
 
