@@ -267,3 +267,31 @@ def test_professional_membership_unlinked_audit_shape() -> None:
     assert command.idempotency_key == (
         f"professional-membership-unlinked:{professional.id}:{professional.version}"
     )
+
+
+def test_professional_membership_unlinked_membership_removal_audit_shape() -> None:
+    professional = _professional(version=4)
+    membership_id = uuid4()
+    context = _audit_context()
+
+    command = professional_membership_unlinked_audit_command(
+        professional=professional,
+        membership_id=membership_id,
+        reason="membership_removal",
+        audit_context=context,
+    )
+
+    _assert_safe_membership_audit_surface(
+        command,
+        professional=professional,
+        context=context,
+    )
+    assert command.action == AuditAction.PROFESSIONAL_MEMBERSHIP_UNLINKED.value
+    assert command.metadata == {
+        "membership_id": str(membership_id),
+        "reason": "membership_removal",
+        "version": professional.version,
+    }
+    assert command.idempotency_key == (
+        f"professional-membership-unlinked:{professional.id}:{professional.version}"
+    )

@@ -112,6 +112,7 @@ class RemoveMembershipService:
             UnlinkProfessionalForMembershipRemovalCommand(
                 tenant_id=command.tenant_id,
                 membership_id=command.membership_id,
+                audit_context=command.audit_context,
             ),
         )
         self._repository.delete_and_flush(

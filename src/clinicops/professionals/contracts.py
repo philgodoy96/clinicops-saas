@@ -189,6 +189,7 @@ class UnlinkProfessionalForMembershipRemovalCommand:
 
     tenant_id: UUID
     membership_id: UUID
+    audit_context: AuditRecordingContext
 
 
 @dataclass(frozen=True, slots=True)

@@ -106,6 +106,7 @@ class RecordingUnlinkProfessionalForMembershipRemovalService:
         self.sessions: list[Session] = []
         self.tenant_ids: list[UUID] = []
         self.membership_ids: list[UUID] = []
+        self.audit_contexts: list[AuditRecordingContext] = []
         self._events = events
         self._error = error
 
@@ -117,6 +118,7 @@ class RecordingUnlinkProfessionalForMembershipRemovalService:
         self.sessions.append(session)
         self.tenant_ids.append(command.tenant_id)
         self.membership_ids.append(command.membership_id)
+        self.audit_contexts.append(command.audit_context)
 
         if self._events is not None:
             self._events.append("unlink")
@@ -675,6 +677,7 @@ def test_successful_removal_invokes_professional_unlink_once(
     db_session: Session,
 ) -> None:
     scenario = create_scenario(db_session)
+    context = audit_context(user_id=scenario.actor.id)
     recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService()
     service = RemoveMembershipService(
         professional_unlink_service=cast(
@@ -689,7 +692,7 @@ def test_successful_removal_invokes_professional_unlink_once(
             tenant_id=scenario.tenant.id,
             actor_user_id=scenario.actor.id,
             membership_id=scenario.target_membership.id,
-            audit_context=audit_context(user_id=scenario.actor.id),
+            audit_context=context,
         ),
     )
 
@@ -698,6 +701,8 @@ def test_successful_removal_invokes_professional_unlink_once(
     assert recording_unlink_service.membership_ids == [
         scenario.target_membership.id,
     ]
+    assert recording_unlink_service.audit_contexts == [context]
+    assert recording_unlink_service.audit_contexts[0] is context
 
 
 def test_professional_unlink_runs_after_lock_before_membership_delete(
@@ -803,6 +808,7 @@ def test_owner_protected_removal_does_not_invoke_professional_unlink(
 
     assert recording_unlink_service.sessions == []
     assert recording_unlink_service.membership_ids == []
+    assert recording_unlink_service.audit_contexts == []
 
 
 def test_self_removal_rejection_does_not_invoke_professional_unlink(
@@ -833,6 +839,7 @@ def test_self_removal_rejection_does_not_invoke_professional_unlink(
 
     assert recording_unlink_service.sessions == []
     assert recording_unlink_service.membership_ids == []
+    assert recording_unlink_service.audit_contexts == []
 
 
 @pytest.mark.parametrize(
@@ -870,6 +877,7 @@ def test_missing_or_cross_tenant_membership_does_not_invoke_professional_unlink(
 
     assert recording_unlink_service.sessions == []
     assert recording_unlink_service.membership_ids == []
+    assert recording_unlink_service.audit_contexts == []
 
 
 def test_professional_unlink_failure_prevents_membership_delete(
@@ -877,12 +885,14 @@ def test_professional_unlink_failure_prevents_membership_delete(
 ) -> None:
     scenario = create_scenario(db_session)
     membership_id = scenario.target_membership.id
+    recorder = RecordingAuditRecorder()
     recording_unlink_service = RecordingUnlinkProfessionalForMembershipRemovalService(
         error=SimulatedProfessionalUnlinkError("unlink unavailable"),
     )
     repository = MembershipAdministrationRepository()
     service = RemoveMembershipService(
         repository=repository,
+        audit_recorder=recorder,
         professional_unlink_service=cast(
             UnlinkProfessionalForMembershipRemovalService,
             recording_unlink_service,
@@ -910,6 +920,7 @@ def test_professional_unlink_failure_prevents_membership_delete(
     delete_and_flush.assert_not_called()
     assert recording_unlink_service.sessions == [db_session]
     assert recording_unlink_service.membership_ids == [membership_id]
+    assert recorder.commands == []
     assert db_session.get(Membership, membership_id) is not None
 
 
@@ -943,6 +954,7 @@ def test_membership_removed_audit_unchanged_with_professional_unlink(
 
     assert result.membership_id == target_membership_id
     assert recording_unlink_service.membership_ids == [target_membership_id]
+    assert recording_unlink_service.audit_contexts[0] is context
     assert recorder.sessions == [db_session]
     assert len(recorder.commands) == 1
 
