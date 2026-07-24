@@ -90,6 +90,21 @@ from clinicops.patients.exceptions import (
     PatientNotFoundError,
     PatientVersionConflictError,
 )
+from clinicops.professionals.exceptions import (
+    ProfessionalAlreadyArchivedError,
+    ProfessionalAlreadyLinkedError,
+    ProfessionalExternalReferenceConflictError,
+    ProfessionalInvalidCursorError,
+    ProfessionalInvalidRegistrationError,
+    ProfessionalInvalidUpdateError,
+    ProfessionalMembershipInactiveError,
+    ProfessionalMembershipLinkConflictError,
+    ProfessionalMembershipNotFoundError,
+    ProfessionalNotArchivedError,
+    ProfessionalNotFoundError,
+    ProfessionalNotLinkedError,
+    ProfessionalVersionConflictError,
+)
 from clinicops.tenancy.exceptions import (
     InvalidOwnershipTransferError,
     InvalidTenantNameError,
@@ -294,6 +309,28 @@ PATIENT_CONFLICT_ERRORS = (
     PatientExternalReferenceConflictError,
     PatientNotArchivedError,
     PatientVersionConflictError,
+)
+
+PROFESSIONAL_BAD_REQUEST_ERRORS = (
+    ProfessionalInvalidCursorError,
+    ProfessionalInvalidRegistrationError,
+    ProfessionalInvalidUpdateError,
+)
+
+PROFESSIONAL_NOT_FOUND_ERRORS = (
+    ProfessionalNotFoundError,
+    ProfessionalMembershipNotFoundError,
+)
+
+PROFESSIONAL_CONFLICT_ERRORS = (
+    ProfessionalAlreadyArchivedError,
+    ProfessionalNotArchivedError,
+    ProfessionalVersionConflictError,
+    ProfessionalExternalReferenceConflictError,
+    ProfessionalAlreadyLinkedError,
+    ProfessionalNotLinkedError,
+    ProfessionalMembershipInactiveError,
+    ProfessionalMembershipLinkConflictError,
 )
 
 
@@ -562,6 +599,27 @@ def _application_problem(
         )
 
     if isinstance(exception, PATIENT_BAD_REQUEST_ERRORS):
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Application request failed",
+            None,
+        )
+
+    if isinstance(exception, PROFESSIONAL_NOT_FOUND_ERRORS):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "Resource not found",
+            None,
+        )
+
+    if isinstance(exception, PROFESSIONAL_CONFLICT_ERRORS):
+        return (
+            status.HTTP_409_CONFLICT,
+            "Resource conflict",
+            None,
+        )
+
+    if isinstance(exception, PROFESSIONAL_BAD_REQUEST_ERRORS):
         return (
             status.HTTP_400_BAD_REQUEST,
             "Application request failed",

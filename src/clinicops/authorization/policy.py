@@ -22,6 +22,13 @@ _ADMIN_PERMISSIONS = frozenset(
         TenantPermission.PATIENT_UPDATE,
         TenantPermission.PATIENT_ARCHIVE,
         TenantPermission.PATIENT_RESTORE,
+        TenantPermission.PROFESSIONAL_READ,
+        TenantPermission.PROFESSIONAL_CREATE,
+        TenantPermission.PROFESSIONAL_UPDATE,
+        TenantPermission.PROFESSIONAL_ARCHIVE,
+        TenantPermission.PROFESSIONAL_RESTORE,
+        TenantPermission.PROFESSIONAL_LINK_MEMBERSHIP,
+        TenantPermission.PROFESSIONAL_UNLINK_MEMBERSHIP,
     }
 )
 
@@ -31,6 +38,7 @@ _STAFF_PERMISSIONS = frozenset(
         TenantPermission.PATIENT_READ,
         TenantPermission.PATIENT_CREATE,
         TenantPermission.PATIENT_UPDATE,
+        TenantPermission.PROFESSIONAL_READ,
     }
 )
 
