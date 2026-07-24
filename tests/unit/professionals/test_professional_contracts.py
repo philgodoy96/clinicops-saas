@@ -230,13 +230,16 @@ def test_explicit_unlink_command_does_not_accept_membership_identifier() -> None
 def test_membership_removal_unlink_command_is_tenant_scoped() -> None:
     tenant_id = uuid4()
     membership_id = uuid4()
+    context = _audit_context()
 
     command = UnlinkProfessionalForMembershipRemovalCommand(
         tenant_id=tenant_id,
         membership_id=membership_id,
+        audit_context=context,
     )
 
     assert command.tenant_id == tenant_id
     assert command.membership_id == membership_id
+    assert command.audit_context is context
     assert not hasattr(command, "professional_id")
     assert not hasattr(command, "expected_version")
