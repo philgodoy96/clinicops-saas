@@ -30,11 +30,16 @@ ClinicOps currently has an implemented backend foundation covering:
 - Docker Compose services for PostgreSQL, API, and worker;
 - durable tenant-scoped audit-log persistence;
 - domain and worker audit emission;
-- tenant-scoped OWNER/ADMIN audit read API.
+- tenant-scoped OWNER/ADMIN audit read API;
+- tenant-scoped patient records with create, read, list, update, archive, and restore;
+- patient optimistic concurrency and tenant-isolated persistence;
+- patient lifecycle audit emission.
 
-Durable Audit Logs are complete, including transactionally coupled recording, idempotent worker replay, and authorized tenant-scoped read access. Tenant-owned operational domains remain under development.
+Durable Audit Logs are complete, including transactionally coupled recording, idempotent worker replay, and authorized tenant-scoped read access.
 
-The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work, engineering risks, test focus, and completion criteria. The next active implementation slice is Patients Domain.
+Patients Domain is complete for the approved tenant-scoped clinical-record boundary: staff-managed patient records, keyset listing and search, optimistic updates, archive and restore, and transactionally coupled audit events. Patients are not platform users and do not authenticate.
+
+The product context, system design, directory structure principles, and engineering standards are documented. The implementation roadmap continues to guide remaining delivery work. The next implementation milestone is Professionals Domain.
 
 ---
 
@@ -331,6 +336,18 @@ Audit records and application logs serve different purposes and are stored and r
 
 ---
 
+## Patients Domain
+
+ClinicOps treats a Patient as a tenant-scoped clinical record managed by tenant members.
+
+OWNER, ADMIN, and STAFF may create, read, list, and update active patients. OWNER and ADMIN may archive and restore patients. STAFF cannot archive or restore. No hard-delete endpoint exists. Archived patients remain readable and are read-only until restored.
+
+Patient mutations use optimistic concurrency through an explicit `expected_version`. Cross-tenant access is rejected as not found. Audit events record lifecycle changes without patient PII in metadata.
+
+Detailed design lives in [Patients Domain](docs/architecture/patients.md).
+
+---
+
 ## Documentation
 
 - [Project Context](docs/architecture/project-context.md)
@@ -352,6 +369,7 @@ Audit records and application logs serve different purposes and are stored and r
 - [Billing Lifecycle](docs/architecture/billing-lifecycle.md)
 - [Background Jobs](docs/architecture/background-jobs.md)
 - [Durable Audit Logs](docs/architecture/audit-logs.md)
+- [Patients Domain](docs/architecture/patients.md)
 - [Security](docs/architecture/security.md)
 
 Additional architecture documents and ADRs will be added as implementation introduces concrete decisions.
@@ -389,7 +407,7 @@ Additional architecture documents and ADRs will be added as implementation intro
 
 ### Clinic Operations
 
-- patient management;
+- patient management (complete for the approved tenant-scoped clinical-record boundary);
 - appointment lifecycle;
 - reminder jobs;
 - tenant and entitlement enforcement.
@@ -410,7 +428,7 @@ Additional architecture documents and ADRs will be added as implementation intro
 - billing webhook asynchronous processing;
 - retry and dead-job behavior;
 - Durable Audit Logs;
-- Patients and Professionals domains;
+- Professionals Domain;
 - Final Hardening and portfolio release.
 
 ---

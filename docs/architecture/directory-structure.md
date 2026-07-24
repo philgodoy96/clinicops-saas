@@ -56,7 +56,8 @@ clinicops-saas/
 │   └── clinicops/
 │       ├── api/
 │       │   └── v1/
-│       │       └── audit_logs.py
+│       │       ├── audit_logs.py
+│       │       └── patients.py
 │       ├── authentication/
 │       ├── authorization/
 │       ├── billing/
@@ -72,15 +73,20 @@ clinicops-saas/
 │       ├── audit/
 │       │   ├── repositories/
 │       │   └── services/
+│       ├── patients/
+│       │   ├── repositories/
+│       │   └── services/
 │       ├── tenancy/
 │       ├── main.py
 │       └── worker.py
 │
 ├── tests/
 │   ├── integration/
-│   │   └── audit/
+│   │   ├── audit/
+│   │   └── patients/
 │   └── unit/
-│       └── audit/
+│       ├── audit/
+│       └── patients/
 │
 ├── .dockerignore
 ├── .env.example
@@ -95,9 +101,10 @@ clinicops-saas/
 
 The current tree reflects implemented capabilities only. It includes the durable
 background-job queue package, worker runtime entry point, billing webhook job
-handler, Durable Audit Logs package, tenant-scoped audit HTTP route, Dockerfile,
-and Compose `api` and `worker` services. It does not yet include patients or
-professionals packages, ADR directory, or a dedicated security-test directory.
+handler, Durable Audit Logs package, tenant-scoped audit HTTP route, Patients
+package, tenant-scoped patients HTTP route, Dockerfile, and Compose `api` and
+`worker` services. It does not yet include the professionals package, ADR
+directory, or a dedicated security-test directory.
 
 ---
 
@@ -132,7 +139,7 @@ clinicops-saas/
 │       ├── tenancy/
 │       ├── jobs/            # durable queue and worker runtime implemented
 │       ├── audit/           # Durable Audit Logs implemented
-│       ├── patients/        # Patients Domain
+│       ├── patients/        # Patients Domain implemented
 │       ├── professionals/   # Professionals Domain
 │       ├── main.py
 │       └── worker.py
@@ -156,16 +163,17 @@ clinicops-saas/
 This is the target structure for remaining milestones.
 
 The durable `jobs/` queue foundation, worker runtime entry point, billing job
-handler packages, Durable Audit Logs package, audit HTTP route, Dockerfile, and
-Compose worker service already exist in the current tree. The patients package
-and professionals package remain target introductions.
+handler packages, Durable Audit Logs package, audit HTTP route, Patients
+package, patients HTTP route, Dockerfile, and Compose worker service already
+exist in the current tree. The professionals package remains a target
+introduction.
 
 Directories and files must be introduced only when their corresponding
 responsibilities exist.
 
-Exact internal filenames inside `patients/` and `professionals/` remain subject
-to system design approval for each milestone. Audit filenames are fixed by the
-implemented package and API route.
+Exact internal filenames inside `professionals/` remain subject to system
+design approval for that milestone. Audit and patients filenames are fixed by
+the implemented packages and API routes.
 
 Appointments are intentionally deferred beyond the current release and are therefore not represented as a required target package here.
 
@@ -239,7 +247,8 @@ Examples:
 - authentication and authorization;
 - billing and webhook processing;
 - background job queue and worker execution;
-- durable audit logs.
+- durable audit logs;
+- patients domain.
 
 #### `docs/adr/`
 
@@ -425,12 +434,12 @@ invitations
 billing
 jobs
 audit
+patients
 ```
 
 Remaining current-release packages are expected to include:
 
 ```text
-patients
 professionals
 ```
 
@@ -441,7 +450,10 @@ The `audit` package owns Durable Audit Log persistence, contracts, metadata
 normalization, recording context, idempotent recording, cursor transport, read
 policy, public schemas, and tenant-scoped query services. Domain packages emit
 audit facts through `AuditRecorder`, and `src/clinicops/api/v1/audit_logs.py`
-exposes the tenant-scoped read API.
+exposes the tenant-scoped read API. The `patients` package owns tenant-scoped
+patient persistence, lifecycle workflows, validation, cursor pagination,
+contracts, public schemas, and audit emission, with HTTP composition under
+`src/clinicops/api/v1/patients.py`.
 
 Each package owns its business rules, persistence behavior, application services, and public interfaces.
 
@@ -1033,6 +1045,9 @@ billing services
 
 billing webhook processing and worker handler
     -> processed and ignored outcomes with worker system attribution
+
+patients services
+    -> create, update, archive, and restore
 ```
 
 Intentionally deferred under audit:
@@ -1042,13 +1057,106 @@ export and retention jobs
 platform-wide audit history
 metadata search
 actor and date-range filters
-Patients and Professionals audit integration
+Professionals audit integration
 frontend audit screens
 ```
 
 Detailed audit semantics live in `docs/architecture/audit-logs.md`.
 
 Audit models are registered centrally through:
+
+```text
+src/clinicops/db/models.py
+```
+
+---
+
+## Patients Package
+
+The implemented patients package provides tenant-scoped patient records under
+`src/clinicops`.
+
+```text
+src/clinicops/
+├── api/v1/
+│   └── patients.py
+└── patients/
+    ├── contracts.py
+    ├── cursor.py
+    ├── enums.py
+    ├── exceptions.py
+    ├── models.py
+    ├── schemas.py
+    ├── validation.py
+    ├── repositories/
+    │   └── patient_repository.py
+    └── services/
+        ├── archive_patient.py
+        ├── create_patient.py
+        ├── get_patient.py
+        ├── list_patients.py
+        ├── restore_patient.py
+        └── update_patient.py
+```
+
+Supporting tests and schema migration:
+
+```text
+tests/
+├── unit/patients/
+└── integration/patients/
+
+docs/architecture/patients.md
+migrations/versions/0010_add_patients.py
+```
+
+Capability-level ownership:
+
+```text
+models.py
+    -> Patient persistence and optimistic concurrency version
+
+enums.py
+    -> stable patient lifecycle status identifiers
+
+contracts.py
+    -> typed create, update, archive, restore, and list inputs
+
+exceptions.py
+    -> patient-domain application errors
+
+validation.py
+    -> shared field constraints and uniqueness helpers
+
+cursor.py
+    -> opaque URL-safe Base64 cursor encode and decode
+
+schemas.py
+    -> public request and response transport contracts
+
+repositories/
+    -> tenant-scoped persistence, row locks, and cursor pagination
+
+services/
+    -> create, get, list, update, archive, and restore orchestration
+
+api/v1/patients.py
+    -> tenant-scoped patients HTTP routes
+```
+
+Intentionally deferred under patients:
+
+```text
+appointments and medical-record workflows
+patient portal access
+field-level encryption
+bulk import or export
+global or cross-tenant patient identity
+```
+
+Detailed patient semantics live in `docs/architecture/patients.md`.
+
+Patient models are registered centrally through:
 
 ```text
 src/clinicops/db/models.py
@@ -1160,7 +1268,7 @@ Examples:
 
 - login and token refresh;
 - invitation acceptance transactions;
-- tenant-scoped patient access once Patients lands;
+- tenant-scoped patient access;
 - duplicate webhook handling;
 - background job enqueue, claim, completion, failure, concurrency, and
   worker-runtime behavior;

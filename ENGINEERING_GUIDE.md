@@ -44,6 +44,7 @@ authorization
 tenancy
 invitations
 billing
+patients
 ```
 
 Remaining current-release domains and infrastructure areas include:
@@ -51,7 +52,6 @@ Remaining current-release domains and infrastructure areas include:
 ```text
 jobs
 audit
-patients
 professionals
 ```
 

@@ -324,6 +324,11 @@ billing.subscription.cancelled
 
 billing.webhook.processed
 billing.webhook.ignored
+
+patient.created
+patient.updated
+patient.archived
+patient.restored
 ```
 
 New audited domain operations can be introduced without requiring an enum migration for every action.
@@ -338,6 +343,7 @@ membership
 invitation
 subscription
 billing_webhook_event
+patient
 ```
 
 Each entry stores:
@@ -493,6 +499,22 @@ This avoids collision with SQLAlchemy declarative metadata.
   "event_type": "subscription.updated",
   "processing_outcome": "processed"
 }
+```
+
+```json
+{ "status": "active", "version": 1 }
+```
+
+```json
+{ "version": 2, "changed_fields": ["email", "phone"] }
+```
+
+```json
+{ "previous_status": "active", "new_status": "archived", "version": 3 }
+```
+
+```json
+{ "previous_status": "archived", "new_status": "active", "version": 4 }
 ```
 
 Subscription status values use the persisted enum spelling `canceled`. The audit action name remains `billing.subscription.cancelled`.
@@ -660,6 +682,31 @@ Implemented emissions:
 
 These records use worker system attribution and include safe `event_type` and `processing_outcome` metadata.
 
+### Patients
+
+See [Patients Domain](patients.md).
+
+Implemented emissions:
+
+- `patient.created`;
+- `patient.updated`;
+- `patient.archived`;
+- `patient.restored`.
+
+Authenticated HTTP routes supply `AuditRecordingContext.http_user(...)`.
+
+Patient audit recording uses the same SQLAlchemy Session as the patient mutation. The service records the audit entry before the HTTP route commits. Audit persistence failure prevents the mutation from committing.
+
+Read and list operations do not emit audit events.
+
+Patient audit metadata excludes:
+
+- `full_name`;
+- `email`;
+- `phone`;
+- `date_of_birth`;
+- `external_reference` values.
+
 ## Idempotency and Replay
 
 `idempotency_key` is optional and internal.
@@ -678,6 +725,10 @@ subscription-plan-changed:{subscription_id}:{client_idempotency_key}
 subscription-cancelled:{subscription_id}:{client_idempotency_key}
 billing-webhook-audit:{webhook_event_id}:processed
 billing-webhook-audit:{webhook_event_id}:ignored
+patient-created:{patient_id}
+patient-updated:{patient_id}:{version}
+patient-archived:{patient_id}:{version}
+patient-restored:{patient_id}:{version}
 ```
 
 Role changes, membership removal, and ownership transfer intentionally omit synthetic audit keys because those domain operations have no durable operation identifier suitable for semantic replay reuse.
@@ -1190,7 +1241,6 @@ Intentionally deferred beyond the current release:
 - table partitioning;
 - metadata GIN index;
 - frontend audit screens;
-- Patients audit integration;
 - Professionals audit integration.
 
 These remain deliberate engineering boundaries rather than incomplete foundation work.

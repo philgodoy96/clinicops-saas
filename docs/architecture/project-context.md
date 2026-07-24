@@ -299,13 +299,13 @@ ClinicOps is divided into the following business and platform capabilities.
 * provider state ordering;
 * billing reconciliation and concurrency protections;
 * request IDs and correlation IDs;
-* structured application logs.
+* structured application logs;
+* patient management: tenant-scoped create, read, list, partial update, archive, restore, optimistic concurrency, RBAC, and transactionally coupled audit events.
 
 ### Remaining current-release capabilities
 
 * Background Jobs & Worker;
 * Durable Audit Logs;
-* Patients Domain;
 * Professionals Domain;
 * Final Hardening & Portfolio Release.
 
@@ -334,16 +334,6 @@ Remaining work includes:
 * authorized tenant-scoped read access.
 
 Regular application logs are not a durable audit trail.
-
-### Patients
-
-Remaining work includes:
-
-* tenant-scoped patient records;
-* create, read, list, update, and archive or deactivate workflows;
-* tenant isolation and permissions;
-* validation, indexing, and uniqueness rules;
-* audit emission.
 
 ### Professionals
 
@@ -470,11 +460,10 @@ The current release includes the implemented SaaS foundation plus the remaining 
 
 * Background Jobs & Worker;
 * Durable Audit Logs;
-* Patients Domain;
 * Professionals Domain;
 * Final Hardening & Portfolio Release.
 
-The implemented foundation already covers identity, authentication sessions, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, and the approved billing and webhook boundary.
+The implemented foundation already covers identity, authentication sessions, tenant isolation, membership RBAC, invitations, membership administration, ownership transfer, the approved billing and webhook boundary, and tenant-scoped patient management.
 
 Billing is complete for its approved synchronous and local-provider scope. Background Jobs will later operationalize webhook processing and reconciliation through durable asynchronous execution.
 
