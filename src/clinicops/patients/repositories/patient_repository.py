@@ -56,9 +56,13 @@ class PatientRepository:
     ) -> PatientRecord | None:
         """Return one patient only when it belongs to the tenant."""
 
-        statement = select(Patient).where(
-            Patient.tenant_id == tenant_id,
-            Patient.id == patient_id,
+        statement = (
+            select(Patient)
+            .where(
+                Patient.tenant_id == tenant_id,
+                Patient.id == patient_id,
+            )
+            .execution_options(populate_existing=True)
         )
         patient = self._session.scalars(statement).one_or_none()
         if patient is None:
