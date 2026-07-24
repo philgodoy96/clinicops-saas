@@ -80,22 +80,7 @@ def _clear_competing_claimable_jobs(owned_job_id: UUID) -> None:
         session.commit()
 
 
-def _open_claim_window(job_id: UUID) -> None:
-    with Session(get_engine()) as session:
-        job = session.get(BackgroundJob, job_id)
-        assert job is not None
-        assert job.status in {
-            BackgroundJobStatus.QUEUED,
-            BackgroundJobStatus.RETRY_SCHEDULED,
-        }
-
-        database_now = session.execute(select(func.now())).scalar_one()
-        job.priority = _TEST_JOB_PRIORITY
-        job.available_at = database_now - timedelta(hours=1)
-        session.commit()
-
-
-def _open_claim_window_in_session(
+def _open_claim_window(
     session: Session,
     job_id: UUID,
 ) -> None:
@@ -112,19 +97,14 @@ def _open_claim_window_in_session(
     session.flush()
 
 
-def _prepare_owned_job_for_claim(job_id: UUID) -> None:
-    _clear_competing_claimable_jobs(job_id)
-    _open_claim_window(job_id)
-
-
-def _prepare_owned_job_for_reclaim(
+def _prepare_owned_job_for_claim(
     session: Session,
     job_id: UUID,
 ) -> None:
     # Clear first, then open the window in the same transaction as the claim so
     # the job is not globally visible to leftover claimable rows between commits.
     _clear_competing_claimable_jobs(job_id)
-    _open_claim_window_in_session(session, job_id)
+    _open_claim_window(session, job_id)
 
 
 def _claim_one(
@@ -161,9 +141,9 @@ def test_retryable_failure_can_later_succeed() -> None:
         job_id = job.id
 
     try:
-        _prepare_owned_job_for_claim(job_id)
-
         with Session(engine) as session:
+            _prepare_owned_job_for_claim(session, job_id)
+
             first_claim = _claim_one(
                 session,
                 worker_id="worker-first-attempt",
@@ -190,7 +170,7 @@ def test_retryable_failure_can_later_succeed() -> None:
             assert first_failure.status is BackgroundJobStatus.RETRY_SCHEDULED
             assert first_failure.processing_attempt_count == 1
 
-            _prepare_owned_job_for_reclaim(session, job_id)
+            _prepare_owned_job_for_claim(session, job_id)
 
             second_claim = _claim_one(
                 session,
@@ -245,9 +225,9 @@ def test_retryable_failures_dead_letter_at_maximum_attempts() -> None:
         job_id = job.id
 
     try:
-        _prepare_owned_job_for_claim(job_id)
-
         with Session(engine) as session:
+            _prepare_owned_job_for_claim(session, job_id)
+
             first_claim = _claim_one(
                 session,
                 worker_id="worker-retry-one",
@@ -272,7 +252,7 @@ def test_retryable_failures_dead_letter_at_maximum_attempts() -> None:
             assert first_failure.status is BackgroundJobStatus.RETRY_SCHEDULED
             assert first_failure.processing_attempt_count == 1
 
-            _prepare_owned_job_for_reclaim(session, job_id)
+            _prepare_owned_job_for_claim(session, job_id)
 
             second_claim = _claim_one(
                 session,
@@ -329,9 +309,9 @@ def test_terminal_failure_dead_letters_without_extra_attempts() -> None:
         job_id = job.id
 
     try:
-        _prepare_owned_job_for_claim(job_id)
-
         with Session(engine) as session:
+            _prepare_owned_job_for_claim(session, job_id)
+
             claim = _claim_one(
                 session,
                 worker_id="worker-terminal-failure",
@@ -384,9 +364,9 @@ def test_failure_transition_rollback_preserves_active_claim() -> None:
         job_id = job.id
 
     try:
-        _prepare_owned_job_for_claim(job_id)
-
         with Session(engine) as claim_session:
+            _prepare_owned_job_for_claim(claim_session, job_id)
+
             claim = _claim_one(
                 claim_session,
                 worker_id="worker-rollback",

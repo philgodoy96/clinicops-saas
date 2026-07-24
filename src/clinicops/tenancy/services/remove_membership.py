@@ -5,6 +5,12 @@ from clinicops.audit.contracts import RecordAuditLogCommand
 from clinicops.audit.recording import AuditRecorder, SqlAlchemyAuditRecorder
 from clinicops.authorization.permissions import TenantPermission
 from clinicops.authorization.policy import role_has_permission
+from clinicops.professionals.contracts import (
+    UnlinkProfessionalForMembershipRemovalCommand,
+)
+from clinicops.professionals.services.unlink_professional_for_membership_removal import (
+    UnlinkProfessionalForMembershipRemovalService,
+)
 from clinicops.tenancy.exceptions import (
     MembershipActorNotAuthorizedError,
     MembershipNotFoundError,
@@ -34,12 +40,18 @@ class RemoveMembershipService:
         self,
         repository: MembershipAdministrationRepository | None = None,
         audit_recorder: AuditRecorder | None = None,
+        professional_unlink_service: (UnlinkProfessionalForMembershipRemovalService | None) = None,
     ) -> None:
         self._repository = (
             repository if repository is not None else MembershipAdministrationRepository()
         )
         self._audit_recorder = (
             audit_recorder if audit_recorder is not None else SqlAlchemyAuditRecorder()
+        )
+        self._professional_unlink_service = (
+            professional_unlink_service
+            if professional_unlink_service is not None
+            else UnlinkProfessionalForMembershipRemovalService()
         )
 
     def execute(
@@ -95,6 +107,13 @@ class RemoveMembershipService:
             user_id=target.user_id,
         )
         removed_role = target.role
+        self._professional_unlink_service.execute(
+            session,
+            UnlinkProfessionalForMembershipRemovalCommand(
+                tenant_id=command.tenant_id,
+                membership_id=command.membership_id,
+            ),
+        )
         self._repository.delete_and_flush(
             session,
             target,
