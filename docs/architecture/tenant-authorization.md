@@ -23,6 +23,11 @@ Does that role grant the required permission?
 
 This separation keeps tenant authorization state out of access tokens and ensures that current PostgreSQL state remains authoritative.
 
+Tenant isolation for tenant-owned resources is application-enforced: server-resolved
+membership plus tenant-qualified repository access. PostgreSQL Row-Level
+Security is not part of this trust boundary. See
+[ADR 0001](adr/0001-application-enforced-tenant-isolation.md).
+
 ## Trust Chain
 
 Protected tenant-scoped operations follow this chain:

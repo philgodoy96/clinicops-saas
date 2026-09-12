@@ -112,8 +112,11 @@ Tenant and owner membership creation happen in the same transaction.
 
 A later failure before commit rolls back both records.
 
-The database partial unique index protecting one active owner per tenant remains
-the final persistence-level safeguard.
+Exactly one active owner is a domain invariant. The database partial unique
+index `uq_memberships_one_active_owner_per_tenant` enforces at-most-one. This
+creation workflow, together with the dedicated ownership-transfer path,
+preserves at-least-one. Ordinary membership mutations cannot introduce a second
+owner or remove the last owner.
 
 ### Response
 
@@ -524,7 +527,9 @@ Protects one membership per global user and tenant.
 uq_memberships_one_active_owner_per_tenant
 ```
 
-Protects one active owner per tenant.
+Protects at most one active owner per tenant. The at-least-one half of the
+exactly-one-owner domain invariant is preserved by transactional creation and
+ownership-transfer workflows.
 
 ### Invitation token uniqueness
 

@@ -180,6 +180,7 @@ Contains public technical documentation.
 docs/
 ├── api/
 ├── architecture/
+│   └── adr/
 └── development/
 ```
 
@@ -199,18 +200,20 @@ Examples:
 - patients domain;
 - professionals domain.
 
+#### `docs/architecture/adr/`
+
+Contains Architecture Decision Records for durable architectural choices.
+
+Current records:
+
+- `0001-application-enforced-tenant-isolation.md`
+
 #### `docs/api/`
 
 Contains public API usage documents such as the Professionals API.
 
 OpenAPI remains the generated contract surface. Usage documents complement that
 contract with request examples and operational notes.
-
-#### ADRs
-
-Architecture Decision Records may be introduced later when a decision warrants a
-durable decision record. An ADR directory is not required for project
-completion.
 
 ---
 

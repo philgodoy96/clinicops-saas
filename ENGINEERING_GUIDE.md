@@ -201,15 +201,28 @@ A valid access token does not grant access to a tenant by itself.
 
 Tenant authorization and tenant-scoped repository queries are complementary controls.
 
+Together they provide application-enforced tenant isolation. PostgreSQL
+Row-Level Security is not enabled; see
+`docs/architecture/adr/0001-application-enforced-tenant-isolation.md`.
+
 Cross-tenant access is a critical security defect.
 
 ---
 
 ## 8. Tenant Ownership Rules
 
-Every tenant must have exactly one active owner.
+Exactly one active owner is a domain invariant.
 
-The owner:
+Enforcement split:
+
+- database: at most one active owner, via partial unique index
+  `uq_memberships_one_active_owner_per_tenant`;
+- transactional application workflows: at least one active owner across
+  supported tenant-creation and ownership-transfer flows;
+- supported system behavior: exactly one active owner.
+
+Ordinary membership mutation paths cannot bypass the dedicated ownership
+workflow. The owner:
 
 - cannot remove their own membership;
 - cannot leave the tenant directly;
@@ -227,7 +240,9 @@ Ownership transfer must:
 - record its required audit fact in the same local transaction;
 - commit atomically.
 
-The system must never expose a committed state with zero or multiple active owners.
+Supported committed states must not expose zero or multiple active owners.
+See `docs/architecture/tenant-membership.md` and
+`docs/architecture/adr/0001-application-enforced-tenant-isolation.md`.
 
 ---
 

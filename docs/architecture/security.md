@@ -1,5 +1,36 @@
 # Security
 
+## Guarantees and Trust Boundaries
+
+ClinicOps enforces application-enforced tenant isolation for tenant-owned data.
+
+Guaranteed by this version:
+
+- tenant membership and authorization are resolved server-side;
+- tenant-owned reads and mutations are tenant-qualified at application and
+  repository boundaries;
+- supported application paths reject cross-tenant access;
+- machine billing and worker paths resolve tenant ownership from local durable
+  records, not from untrusted client or provider `tenant_id` claims;
+- the database enforces at-most-one active owner per tenant;
+- supported transactional ownership workflows preserve at-least-one active
+  owner, yielding the domain invariant of exactly one active owner.
+
+Not implied:
+
+- PostgreSQL Row-Level Security is not enabled;
+- direct SQL with privileged credentials is outside the application isolation
+  guarantee;
+- a single database constraint does not prove both halves of the owner
+  invariant.
+
+The application and repository layer is part of the trusted computing base for
+isolation. Revisit PostgreSQL RLS or stronger physical isolation when
+additional services, analyst SQL, plugins, regulatory defense-in-depth needs,
+or a threat model that assumes application-layer compromise require the
+database itself to constrain row visibility. See
+[ADR 0001](adr/0001-application-enforced-tenant-isolation.md).
+
 ## Billing Webhook Authentication
 
 Billing webhook requests are machine-to-machine provider callbacks.
