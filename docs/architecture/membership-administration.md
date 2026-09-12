@@ -609,11 +609,13 @@ uq_memberships_one_active_owner_per_tenant
 
 Protects at most one active owner membership per tenant.
 
-The database partial unique index is the final safeguard against two active
-owners.
+Exactly one active owner is a domain invariant. PostgreSQL enforces the
+at-most-one half with this partial unique index. Transactional tenant creation
+and ownership-transfer workflows preserve the at-least-one half, and ordinary
+membership mutation paths cannot bypass the dedicated ownership workflow.
 
-The requirement that an active tenant retain at least one active owner remains
-application-enforced.
+Supported system behavior is exactly one active owner. The index is not a
+single constraint proving both halves.
 
 ### Role and status values
 

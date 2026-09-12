@@ -332,6 +332,10 @@ Tenant authorization is based on the user's active membership in the requested t
 
 Every tenant must always have exactly one active owner.
 
+That domain invariant is split: the database enforces at-most-one via
+`uq_memberships_one_active_owner_per_tenant`; supported transactional creation
+and ownership-transfer workflows preserve at-least-one.
+
 ### Patient Ownership
 
 Each patient record belongs to exactly one tenant.
@@ -494,7 +498,10 @@ Global users allow one identity to operate across multiple clinics while members
 
 ### Exactly One Tenant Owner
 
-A single owner provides a clear final authority for billing and account ownership. Explicit transactional ownership transfer prevents invalid zero-owner or multi-owner states.
+A single owner provides a clear final authority for billing and account
+ownership. Database-enforced at-most-one and transactionally preserved
+at-least-one together maintain the domain invariant. Explicit transactional
+ownership transfer prevents invalid zero-owner or multi-owner committed states.
 
 ### Tenant-Scoped Patients and Professionals
 

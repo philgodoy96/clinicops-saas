@@ -161,9 +161,40 @@ A valid access token does not grant access to a tenant without an active members
 
 ---
 
+## Guarantees and Trust Boundaries
+
+Guaranteed by this version:
+
+- tenant membership and authorization are resolved server-side from persisted state;
+- tenant-owned reads and mutations use tenant-qualified application and repository boundaries;
+- supported application paths reject cross-tenant access to tenant-owned resources;
+- active-owner uniqueness has database support for the at-most-one half
+  (`uq_memberships_one_active_owner_per_tenant`);
+- supported transactional tenant-creation and ownership-transfer workflows
+  preserve the full exactly-one-owner domain invariant.
+
+Not implied:
+
+- PostgreSQL Row-Level Security is not enabled;
+- direct SQL with privileged credentials is not constrained by application
+  tenant filters;
+- "exactly one active owner" is not a single database constraint proving both
+  halves of the invariant.
+
+Production hardening triggers for stronger database isolation, including
+reconsidering RLS, are recorded in
+[ADR 0001](docs/architecture/adr/0001-application-enforced-tenant-isolation.md).
+
+---
+
 ## Tenant Ownership
 
-Every tenant must have exactly one active owner.
+Exactly one active owner is a domain invariant. PostgreSQL enforces the
+at-most-one half with a partial unique index. Transactional tenant creation and
+ownership-transfer workflows preserve the at-least-one half, and ordinary
+membership mutation paths cannot bypass the dedicated ownership workflow.
+
+Supported system behavior is exactly one active owner.
 
 The owner cannot:
 
@@ -400,6 +431,7 @@ Detailed design lives in [Professionals Domain](docs/architecture/professionals-
 - [Professionals Domain](docs/architecture/professionals-domain.md)
 - [Professionals API](docs/api/professionals.md)
 - [Security](docs/architecture/security.md)
+- [ADR 0001: Application-Enforced Tenant Isolation](docs/architecture/adr/0001-application-enforced-tenant-isolation.md)
 
 Additional ADRs may be introduced when future changes create decisions with durable architectural consequences.
 

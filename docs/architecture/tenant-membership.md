@@ -207,9 +207,27 @@ uq_memberships_user_id_tenant_id
 
 A global user may belong to many tenants but may have only one membership within a specific tenant.
 
-### At Most One Active Owner
+### Exactly One Active Owner
 
-The database enforces a partial unique index equivalent to:
+Exactly one active owner is a domain invariant. PostgreSQL enforces the
+at-most-one half with a partial unique index. Transactional tenant creation and
+ownership-transfer workflows preserve the at-least-one half, and ordinary
+membership mutation paths cannot bypass the dedicated ownership workflow.
+
+Enforcement split:
+
+```text
+Database (partial unique index)
+    -> at most one active owner
+
+Transactional application workflows
+    -> at least one active owner across supported flows
+
+Supported system behavior
+    -> exactly one active owner
+```
+
+The database partial unique index is equivalent to:
 
 ```sql
 UNIQUE (tenant_id)
@@ -222,33 +240,26 @@ Index name:
 uq_memberships_one_active_owner_per_tenant
 ```
 
-This guarantees:
+Migration:
 
 ```text
-At most one active owner per tenant.
+migrations/versions/0003_add_tenants_and_memberships.py
 ```
 
-A disabled historical owner does not conflict with the current active owner because disabled memberships are excluded from the partial index.
+A disabled historical owner does not conflict with the current active owner
+because disabled memberships are excluded from the partial index.
 
-### At Least One Active Owner
+The application preserves the at-least-one half by:
 
-A simple database constraint cannot conveniently guarantee that every persisted tenant always has an active owner.
+- creating every tenant with an active owner membership in the same transaction;
+- rejecting generic role change, disable, enable, and remove paths that target
+  the active owner;
+- changing ownership only through the transactional ownership transfer service,
+  which locks the tenant and memberships, demotes the current owner, promotes
+  the target, and records audit state before the caller commits.
 
-ClinicOps therefore divides the invariant:
-
-```text
-PostgreSQL
-    -> at most one active owner
-
-Application workflows
-    -> at least one active owner
-```
-
-The application maintains the second half by:
-
-- creating every tenant with an active owner membership;
-- not exposing a generic owner removal operation;
-- changing ownership only through the transactional ownership transfer service.
+This is not a single database constraint proving both halves, and it does not
+rely on a database trigger to enforce at-least-one.
 
 ## Tenant Creation
 

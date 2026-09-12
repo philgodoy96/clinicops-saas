@@ -482,10 +482,11 @@ Active membership exists
 Critical rules:
 
 * one membership per user and tenant;
-* exactly one active owner membership per tenant;
+* exactly one active owner membership per tenant as a domain invariant
+  (database-enforced at-most-one; transactionally preserved at-least-one);
 * invitations cannot assign the owner role;
 * disabled Memberships cannot authorize operations;
-* the owner cannot be disabled or removed;
+* the owner cannot be disabled or removed through generic membership paths;
 * ownership transfer is an explicit transaction.
 
 ---
